@@ -422,13 +422,13 @@ book_conv = ConversationHandler(
     entry_points=[CommandHandler("book", book_start)],
     states={
         DATE: [
-            CallbackQueryHandler(date_chosen, pattern="^(date_|noop|back)$"),
+            CallbackQueryHandler(date_chosen, pattern="^(date_|noop|back)"),
         ],
         START_TIME: [
-            CallbackQueryHandler(time_chosen, pattern="^(time_|back)$"),
+            CallbackQueryHandler(time_chosen, pattern="^(time_|back)"),
         ],
         DURATION: [
-            CallbackQueryHandler(duration_chosen, pattern="^(dur_|back)$"),
+            CallbackQueryHandler(duration_chosen, pattern="^(dur_|back)"),
         ],
         CONFIRM: [
             CallbackQueryHandler(confirm_booking, pattern="^(confirm_yes|confirm_no|back)$"),
