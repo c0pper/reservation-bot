@@ -1,5 +1,8 @@
+import logging
 import re
 from datetime import date, datetime, timedelta
+
+logger = logging.getLogger(__name__)
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
@@ -41,9 +44,10 @@ def _is_sitter(update: Update) -> bool:
 # ── /start ──────────────────────────────────────────────────────────────
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    name = update.effective_user.first_name
+    user = update.effective_user
+    logger.info("User %d (%s) ran /start", user.id, user.first_name)
     text = (
-        f"Hello {name}! I'm the baby sitter reservation bot.\n\n"
+        f"Hello {user.first_name}! I'm the baby sitter reservation bot.\n\n"
         "Use /help to see available commands or /book to make a reservation."
     )
     await update.message.reply_text(text)
@@ -52,8 +56,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 # ── /help ───────────────────────────────────────────────────────────────
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    is_sitter = _is_sitter(update)
+    logger.info("User %d (%s) ran /help (sitter=%s)", user.id, user.first_name, is_sitter)
     text = HELP_TEXT
-    if _is_sitter(update):
+    if is_sitter:
         text += SITTER_HELP
     await update.message.reply_text(text)
 
@@ -61,12 +68,16 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 # ── /book conversation ──────────────────────────────────────────────────
 
 async def book_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user = update.effective_user
     schedule = db.get_schedule()
     if not schedule:
+        logger.info("User %d (%s) tried /book but no schedule exists", user.id, user.first_name)
         await update.message.reply_text(
             "No schedule has been configured yet. Please try again later."
         )
         return ConversationHandler.END
+
+    logger.info("User %d (%s) started /book", user.id, user.first_name)
 
     today = date.today()
     keyboard = []
@@ -95,6 +106,7 @@ async def book_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 
 async def _show_date_picker(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    logger.info("User %d returning to date picker", update.effective_user.id)
     schedule = db.get_schedule()
     today = date.today()
     keyboard = []
@@ -126,15 +138,18 @@ async def _show_date_picker(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 async def date_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
+    user = update.effective_user
 
     data = query.data
     if data == "noop":
+        logger.info("User %d tapped a disabled date", user.id)
         await query.answer("No availability this day.", show_alert=False)
         return DATE
     if data == "back":
         return await _show_date_picker(update, context)
 
     date_str = data.split("_", 1)[1]
+    logger.info("User %d selected date %s", user.id, date_str)
     context.user_data["booking_date"] = date_str
     return await _show_time_picker(update, context, date_str)
 
@@ -142,12 +157,14 @@ async def date_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
 async def _show_time_picker(
     update: Update, context: ContextTypes.DEFAULT_TYPE, date_str: str
 ) -> int:
+    user = update.effective_user
     d = date.fromisoformat(date_str)
     schedule = db.get_schedule()
     bookings = db.get_bookings_for_date(date_str)
 
     now_str = datetime.now().strftime("%H:%M") if d == date.today() else None
     starts = sch.get_available_start_times(schedule, bookings, d, current_time=now_str)
+    logger.info("User %d: time picker for %s (%d slots)", user.id, date_str, len(starts))
 
     if not starts:
         keyboard = [[InlineKeyboardButton("◀ Back", callback_data="back")]]
@@ -182,12 +199,15 @@ async def _show_time_picker(
 async def time_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
+    user = update.effective_user
 
     data = query.data
     if data == "back":
+        logger.info("User %d went back from time picker", user.id)
         return await _show_date_picker(update, context)
 
     start_time = data.split("_", 1)[1]
+    logger.info("User %d selected start time %s", user.id, start_time)
     context.user_data["booking_start"] = start_time
 
     date_str = context.user_data["booking_date"]
@@ -197,11 +217,14 @@ async def time_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
 async def _show_duration_picker(
     update: Update, context: ContextTypes.DEFAULT_TYPE, date_str: str, start_time: str
 ) -> int:
+    user = update.effective_user
     d = date.fromisoformat(date_str)
     schedule = db.get_schedule()
     bookings = db.get_bookings_for_date(date_str)
 
     options = sch.get_duration_options(schedule, bookings, d, start_time)
+    logger.info("User %d: duration picker for %s at %s (%d options)", user.id, date_str, start_time, len(options))
+
     if not options:
         keyboard = [[InlineKeyboardButton("◀ Back", callback_data="back")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -231,13 +254,16 @@ async def _show_duration_picker(
 async def duration_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
+    user = update.effective_user
 
     data = query.data
     if data == "back":
+        logger.info("User %d went back from duration picker", user.id)
         date_str = context.user_data["booking_date"]
         return await _show_time_picker(update, context, date_str)
 
     end_time = data.split("_", 1)[1]
+    logger.info("User %d selected end time %s", user.id, end_time)
     context.user_data["booking_end"] = end_time
     return await _show_confirmation(update, context)
 
@@ -245,10 +271,11 @@ async def duration_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 async def _show_confirmation(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> int:
+    user = update.effective_user
     date_str = context.user_data["booking_date"]
     start_time = context.user_data["booking_start"]
     end_time = context.user_data["booking_end"]
-    name = update.effective_user.first_name
+    logger.info("User %d: showing confirmation for %s %s-%s", user.id, date_str, start_time, end_time)
 
     d = date.fromisoformat(date_str)
     start_min = sch._to_min(start_time)
@@ -259,7 +286,7 @@ async def _show_confirmation(
         f"📋 Booking Summary\n"
         f"Date: {d.strftime('%A, %d %B %Y')}\n"
         f"Time: {start_time} – {end_time} ({hours} hour{'s' if hours > 1 else ''})\n"
-        f"Name: {name}\n\n"
+        f"Name: {user.first_name}\n\n"
         f"Confirm?"
     )
 
@@ -280,13 +307,16 @@ async def _show_confirmation(
 async def confirm_booking(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
+    user = update.effective_user
 
     if query.data == "confirm_no":
+        logger.info("User %d declined booking confirmation", user.id)
         await query.edit_message_text("Booking cancelled. Use /book to start over.")
         context.user_data.clear()
         return ConversationHandler.END
 
     if query.data == "back":
+        logger.info("User %d went back from confirmation", user.id)
         date_str = context.user_data["booking_date"]
         start_time = context.user_data["booking_start"]
         return await _show_duration_picker(update, context, date_str, start_time)
@@ -294,7 +324,6 @@ async def confirm_booking(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     date_str = context.user_data["booking_date"]
     start_time = context.user_data["booking_start"]
     end_time = context.user_data["booking_end"]
-    user = update.effective_user
 
     schedule = db.get_schedule()
     bookings = db.get_bookings_for_date(date_str)
@@ -303,6 +332,7 @@ async def confirm_booking(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     starts = sch.get_available_start_times(schedule, bookings, d, current_time=now_str)
     if start_time not in starts:
+        logger.info("User %d booking failed: slot %s on %s no longer available", user.id, start_time, date_str)
         await query.edit_message_text(
             "Sorry, this slot is no longer available. Use /book to start again."
         )
@@ -311,6 +341,7 @@ async def confirm_booking(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     options = sch.get_duration_options(schedule, bookings, d, start_time)
     if (start_time, end_time) not in options:
+        logger.info("User %d booking failed: duration %s-%s no longer available", user.id, start_time, end_time)
         await query.edit_message_text(
             "Sorry, this duration is no longer available. Use /book to start again."
         )
@@ -319,6 +350,10 @@ async def confirm_booking(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     booking_id = db.add_booking(
         user.id, user.first_name, date_str, start_time, end_time
+    )
+    logger.info(
+        "User %d (%s) confirmed booking #%d: %s %s-%s",
+        user.id, user.first_name, booking_id, date_str, start_time, end_time,
     )
 
     await query.edit_message_text(
@@ -342,11 +377,17 @@ async def confirm_booking(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 async def book_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    logger.info("User %d cancelled booking conversation", update.effective_user.id)
     await update.message.reply_text("Booking cancelled. Use /book to start a new one.")
     return ConversationHandler.END
 
 
 async def book_unexpected(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    logger.info(
+        "User %d sent unexpected input during booking: %s",
+        update.effective_user.id,
+        update.message.text,
+    )
     await update.message.reply_text(
         "Please use the buttons to respond, or type /cancel to exit."
     )
@@ -379,13 +420,15 @@ book_conv = ConversationHandler(
 # ── /my_bookings ────────────────────────────────────────────────────────
 
 async def my_bookings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = update.effective_user.id
-    bookings = db.get_user_bookings(user_id)
+    user = update.effective_user
+    bookings = db.get_user_bookings(user.id)
 
     if not bookings:
+        logger.info("User %d (%s) viewed bookings: none", user.id, user.first_name)
         await update.message.reply_text("You have no upcoming bookings.")
         return
 
+    logger.info("User %d (%s) viewed %d booking(s)", user.id, user.first_name, len(bookings))
     lines = ["Your upcoming bookings:"]
     for b in bookings:
         d = date.fromisoformat(b["date"])
@@ -399,25 +442,27 @@ async def my_bookings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 # ── /cancel ─────────────────────────────────────────────────────────────
 
 async def cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
     args = context.args
     if not args or not args[0].isdigit():
+        logger.info("User %d invalid /cancel syntax: %s", user.id, args)
         await update.message.reply_text("Usage: /cancel <booking_id>")
         return
 
     booking_id = int(args[0])
-    user_id = update.effective_user.id
     is_sitter = _is_sitter(update)
 
-    success = db.cancel_booking(booking_id, user_id, sitter_mode=is_sitter)
+    success = db.cancel_booking(booking_id, user.id, sitter_mode=is_sitter)
     if success:
+        logger.info("User %d (%s) cancelled booking #%d", user.id, user.first_name, booking_id)
         await update.message.reply_text(f"Booking #{booking_id} has been cancelled.")
         if not is_sitter:
-            name = update.effective_user.first_name
             await notify_sitter(
                 context.bot,
-                f"❌ Booking #{booking_id} cancelled by customer {name}.",
+                f"❌ Booking #{booking_id} cancelled by customer {user.first_name}.",
             )
     else:
+        logger.info("User %d failed to cancel booking #%d: not found or not owned", user.id, booking_id)
         await update.message.reply_text(
             "Could not cancel. Check the booking ID and that it belongs to you."
         )
@@ -426,12 +471,14 @@ async def cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 # ── /available ──────────────────────────────────────────────────────────
 
 async def available(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
     args = context.args
     target = date.today()
     if args:
         try:
             target = date.fromisoformat(args[0])
         except ValueError:
+            logger.info("User %d invalid /available date: %s", user.id, args[0])
             await update.message.reply_text(
                 "Invalid date. Use YYYY-MM-DD format, e.g. /available 2026-05-10"
             )
@@ -447,6 +494,7 @@ async def available(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     bookings = db.get_bookings_for_date(target.isoformat())
     now_str = datetime.now().strftime("%H:%M") if target == date.today() else None
     starts = sch.get_available_start_times(schedule, bookings, target, current_time=now_str)
+    logger.info("User %d checked availability for %s: %d slots", user.id, target.isoformat(), len(starts))
 
     if not starts:
         weekday = target.weekday()
@@ -474,9 +522,11 @@ SCHEDULE_INPUT = 0
 
 async def set_schedule_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not _is_sitter(update):
+        logger.info("Non-sitter user %d tried /set_schedule", update.effective_user.id)
         await update.message.reply_text("This command is only for the sitter.")
         return ConversationHandler.END
 
+    logger.info("Sitter started schedule edit")
     current = db.get_schedule()
     text = "Current schedule:\n" + sch.format_schedule(current)
     text += (
@@ -495,6 +545,7 @@ async def set_schedule_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def set_schedule_receive(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not _is_sitter(update):
+        logger.info("Non-sitter user %d tried to set schedule", update.effective_user.id)
         await update.message.reply_text("This command is only for the sitter.")
         return ConversationHandler.END
 
@@ -516,6 +567,7 @@ async def set_schedule_receive(update: Update, context: ContextTypes.DEFAULT_TYP
             slots.append(parsed)
 
     if errors:
+        logger.info("Sitter schedule input had %d parse error(s)", len(errors))
         await update.message.reply_text(
             f"Could not parse these lines:\n" + "\n".join(errors)
             + "\n\nSend /cancel to abort or fix the lines above."
@@ -529,6 +581,7 @@ async def set_schedule_receive(update: Update, context: ContextTypes.DEFAULT_TYP
         return ConversationHandler.END
 
     db.set_schedule(slots)
+    logger.info("Sitter updated schedule with %d window(s)", len(slots))
     new_schedule = db.get_schedule()
     await update.message.reply_text(
         "✅ Schedule updated!\n\n" + sch.format_schedule(new_schedule)
@@ -537,6 +590,7 @@ async def set_schedule_receive(update: Update, context: ContextTypes.DEFAULT_TYP
 
 
 async def set_schedule_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    logger.info("Sitter cancelled schedule edit")
     await update.message.reply_text("Schedule unchanged.")
     return ConversationHandler.END
 
@@ -558,14 +612,17 @@ set_schedule_conv = ConversationHandler(
 
 async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _is_sitter(update):
+        logger.info("Non-sitter user %d tried /admin", update.effective_user.id)
         await update.message.reply_text("This command is only for the sitter.")
         return
 
     bookings = db.get_all_bookings()
     if not bookings:
+        logger.info("Sitter viewed admin: no upcoming bookings")
         await update.message.reply_text("No upcoming bookings.")
         return
 
+    logger.info("Sitter viewed admin: %d upcoming booking(s)", len(bookings))
     lines = ["📋 All upcoming confirmed bookings:"]
     for b in bookings:
         d = date.fromisoformat(b["date"])

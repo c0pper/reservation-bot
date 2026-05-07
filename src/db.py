@@ -1,5 +1,8 @@
+import logging
 import os
 import sqlite3
+
+logger = logging.getLogger(__name__)
 
 
 def get_db_path() -> str:
@@ -62,6 +65,7 @@ def set_schedule(slots: list[tuple[int, str, str]]) -> None:
     )
     conn.commit()
     conn.close()
+    logger.info("Schedule updated with %d slots", len(slots))
 
 
 def add_booking(
@@ -75,6 +79,10 @@ def add_booking(
     conn.commit()
     booking_id = cur.lastrowid
     conn.close()
+    logger.info(
+        "Booking #%d added: user=%d (%s) date=%s %s-%s",
+        booking_id, user_id, user_name, date, start_time, end_time,
+    )
     return booking_id
 
 
@@ -93,6 +101,11 @@ def cancel_booking(booking_id: int, user_id: int, sitter_mode: bool = False) -> 
     conn.commit()
     affected = cur.rowcount
     conn.close()
+    if affected > 0:
+        logger.info(
+            "Booking #%d cancelled by user=%d (sitter_mode=%s)",
+            booking_id, user_id, sitter_mode,
+        )
     return affected > 0
 
 

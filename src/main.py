@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import os
 
 from telegram import Update
@@ -7,15 +8,22 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters
 import db
 import handlers
 
+logger = logging.getLogger(__name__)
+
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 
 
 async def post_init(app: Application) -> None:
     db.init_db()
-    print(f"Database initialized at {db.get_db_path()}")
+    logger.info("Database initialized at %s", db.get_db_path())
 
 
 def main() -> None:
+    logging.basicConfig(
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        level=os.environ.get("LOG_LEVEL", "INFO").upper(),
+    )
+
     if not BOT_TOKEN:
         msg = "BOT_TOKEN environment variable is not set"
         raise RuntimeError(msg)
@@ -31,7 +39,7 @@ def main() -> None:
     app.add_handler(handlers.set_schedule_conv)
     app.add_handler(CommandHandler("admin", handlers.admin))
 
-    print("Bot is polling...")
+    logger.info("Bot is polling...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
