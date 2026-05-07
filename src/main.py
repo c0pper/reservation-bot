@@ -1,0 +1,39 @@
+import asyncio
+import os
+
+from telegram import Update
+from telegram.ext import Application, CommandHandler, MessageHandler, filters
+
+import db
+import handlers
+
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
+
+
+async def post_init(app: Application) -> None:
+    db.init_db()
+    print(f"Database initialized at {db.get_db_path()}")
+
+
+def main() -> None:
+    if not BOT_TOKEN:
+        msg = "BOT_TOKEN environment variable is not set"
+        raise RuntimeError(msg)
+
+    app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
+
+    app.add_handler(CommandHandler("start", handlers.start))
+    app.add_handler(CommandHandler("help", handlers.help_command))
+    app.add_handler(handlers.book_conv)
+    app.add_handler(CommandHandler("my_bookings", handlers.my_bookings))
+    app.add_handler(CommandHandler("cancel", handlers.cancel_cmd))
+    app.add_handler(CommandHandler("available", handlers.available))
+    app.add_handler(handlers.set_schedule_conv)
+    app.add_handler(CommandHandler("admin", handlers.admin))
+
+    print("Bot is polling...")
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
+
+
+if __name__ == "__main__":
+    main()
