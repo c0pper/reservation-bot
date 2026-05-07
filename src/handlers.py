@@ -86,22 +86,33 @@ async def book_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     for i in range(14):
         d = today + timedelta(days=i)
         weekday = d.weekday()
-        has_avail = any(s["day_of_week"] == weekday for s in schedule)
+        if not any(s["day_of_week"] == weekday for s in schedule):
+            continue
+        bookings = db.get_bookings_for_date(d.isoformat())
+        now_str = datetime.now().strftime("%H:%M") if d == today else None
+        starts = sch.get_available_start_times(schedule, bookings, d, current_time=now_str)
+        if not starts:
+            continue
         label = d.strftime("%a %d")
+        row.append(
+            InlineKeyboardButton(label, callback_data=f"date_{d.isoformat()}")
+        )
 
-        if has_avail:
-            row.append(
-                InlineKeyboardButton(label, callback_data=f"date_{d.isoformat()}")
-            )
-        else:
-            row.append(InlineKeyboardButton(f"·{label}·", callback_data="noop"))
-
-        if len(row) == 4 or i == 13:
+        if len(row) == 4:
             keyboard.append(row)
             row = []
 
+    if row:
+        keyboard.append(row)
+
+    if not keyboard:
+        await update.message.reply_text(
+            "No available slots in the next 14 days. Please try again later."
+        )
+        return ConversationHandler.END
+
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("Select a date:", reply_markup=reply_markup)
+    await update.message.reply_text("Select a date (available slots only):", reply_markup=reply_markup)
     return DATE
 
 
@@ -115,23 +126,36 @@ async def _show_date_picker(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     for i in range(14):
         d = today + timedelta(days=i)
         weekday = d.weekday()
-        has_avail = any(s["day_of_week"] == weekday for s in schedule)
+        if not any(s["day_of_week"] == weekday for s in schedule):
+            continue
+        bookings = db.get_bookings_for_date(d.isoformat())
+        now_str = datetime.now().strftime("%H:%M") if d == today else None
+        starts = sch.get_available_start_times(schedule, bookings, d, current_time=now_str)
+        if not starts:
+            continue
         label = d.strftime("%a %d")
+        row.append(
+            InlineKeyboardButton(label, callback_data=f"date_{d.isoformat()}")
+        )
 
-        if has_avail:
-            row.append(
-                InlineKeyboardButton(label, callback_data=f"date_{d.isoformat()}")
-            )
-        else:
-            row.append(InlineKeyboardButton(f"·{label}·", callback_data="noop"))
-
-        if len(row) == 4 or i == 13:
+        if len(row) == 4:
             keyboard.append(row)
             row = []
 
+    if row:
+        keyboard.append(row)
+
+    if not keyboard:
+        query = update.callback_query
+        await query.edit_message_text(
+            "No available slots in the next 14 days. Please try again later."
+        )
+        context.user_data.clear()
+        return ConversationHandler.END
+
     reply_markup = InlineKeyboardMarkup(keyboard)
     query = update.callback_query
-    await query.edit_message_text("Select a date:", reply_markup=reply_markup)
+    await query.edit_message_text("Select a date (available slots only):", reply_markup=reply_markup)
     return DATE
 
 
@@ -517,7 +541,20 @@ async def available(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 # ── /set_schedule conversation ──────────────────────────────────────────
 
-SCHEDULE_INPUT = 0
+SCHEDULE_DAYS, SCHEDULE_DAY_ACTION, SCHEDULE_START_TIME, SCHEDULE_END_TIME, SCHEDULE_CONFIRM = range(5)
+
+DAY_ABBRS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+
+def _day_label(day_idx: int, windows: list[tuple[str, str]]) -> str:
+    abbr = DAY_ABBRS[day_idx]
+    if not windows:
+        return f"{abbr}: \u2014"
+    s, e = windows[0]
+    label = f"{abbr} {s}\u2013{e}"
+    if len(windows) > 1:
+        label += "\u2026"
+    return label
 
 
 async def set_schedule_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -526,84 +563,279 @@ async def set_schedule_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text("This command is only for the sitter.")
         return ConversationHandler.END
 
-    logger.info("Sitter started schedule edit")
+    logger.info("Sitter started interactive schedule edit")
     current = db.get_schedule()
-    text = "Current schedule:\n" + sch.format_schedule(current)
-    text += (
-        "\n\nSend me the new schedule. One time window per line.\n"
-        "Format: DAY HH:MM-HH:MM\n"
-        "Example:\n"
-        "Monday 09:00-14:00\n"
-        "Monday 16:00-22:00\n"
-        "Tuesday 09:00-14:00\n"
-        "Wednesday OFF\n\n"
-        "Send /cancel to keep the current schedule unchanged."
+    draft: dict[int, list[tuple[str, str]]] = {}
+    for s in current:
+        draft.setdefault(s["day_of_week"], []).append((s["start_time"], s["end_time"]))
+    context.user_data["schedule_draft"] = draft
+
+    keyboard = []
+    row = []
+    for i in range(7):
+        windows = draft.get(i, [])
+        row.append(InlineKeyboardButton(_day_label(i, windows), callback_data=f"sched_day_{i}"))
+        if len(row) == 2:
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
+    keyboard.append([InlineKeyboardButton("\u2705 Done", callback_data="sched_done")])
+
+    await update.message.reply_text(
+        "Tap a day to configure its time windows, then tap Done:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
     )
-    await update.message.reply_text(text)
-    return SCHEDULE_INPUT
+    return SCHEDULE_DAYS
 
 
-async def set_schedule_receive(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    if not _is_sitter(update):
-        logger.info("Non-sitter user %d tried to set schedule", update.effective_user.id)
-        await update.message.reply_text("This command is only for the sitter.")
+async def schedule_day_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+
+    if data == "sched_done":
+        return await _show_schedule_confirm(update, context)
+
+    day_idx = int(data.split("_")[-1])
+    context.user_data["schedule_selected_day"] = day_idx
+    return await _show_day_action(update, context)
+
+
+async def _show_day_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    day_idx = context.user_data["schedule_selected_day"]
+    draft = context.user_data["schedule_draft"]
+    windows = draft.get(day_idx, [])
+
+    lines = [f"<b>{sch.DISPLAY_NAMES[day_idx]}</b>"]
+    if windows:
+        for s, e in windows:
+            lines.append(f"  {s} \u2013 {e}")
+    else:
+        lines.append("  No windows configured")
+
+    keyboard = [[InlineKeyboardButton("\u2795 Add window", callback_data="sched_add")]]
+    if windows:
+        keyboard.append([InlineKeyboardButton("\U0001f5d1 Clear day", callback_data="sched_clear")])
+    keyboard.append([InlineKeyboardButton("\U0001f519 Back to days", callback_data="sched_back_days")])
+
+    await update.callback_query.edit_message_text(
+        "\n".join(lines), reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML"
+    )
+    return SCHEDULE_DAY_ACTION
+
+
+async def schedule_day_action_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+
+    if data == "sched_back_days":
+        return await _show_schedule_day_selector(update, context)
+
+    if data == "sched_clear":
+        day_idx = context.user_data["schedule_selected_day"]
+        context.user_data["schedule_draft"].pop(day_idx, None)
+        return await _show_day_action(update, context)
+
+    if data == "sched_add":
+        return await _show_start_time_picker(update, context)
+
+    return SCHEDULE_DAY_ACTION
+
+
+async def _show_schedule_day_selector(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    draft = context.user_data["schedule_draft"]
+    keyboard = []
+    row = []
+    for i in range(7):
+        windows = draft.get(i, [])
+        row.append(InlineKeyboardButton(_day_label(i, windows), callback_data=f"sched_day_{i}"))
+        if len(row) == 2:
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
+    keyboard.append([InlineKeyboardButton("\u2705 Done", callback_data="sched_done")])
+
+    await update.callback_query.edit_message_text(
+        "Tap a day to configure its time windows, then tap Done:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+    return SCHEDULE_DAYS
+
+
+async def _show_start_time_picker(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    keyboard = []
+    row = []
+    for h in range(24):
+        row.append(InlineKeyboardButton(f"{h:02d}:00", callback_data=f"sched_st_{h:02d}"))
+        if len(row) == 6:
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
+    keyboard.append([InlineKeyboardButton("\U0001f519 Back", callback_data="sched_back_action")])
+
+    await update.callback_query.edit_message_text(
+        "Select start time:", reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+    return SCHEDULE_START_TIME
+
+
+async def schedule_start_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+
+    if data == "sched_back_action":
+        return await _show_day_action(update, context)
+
+    start_hour = int(data.split("_")[-1])
+    context.user_data["schedule_start_hour"] = start_hour
+    return await _show_end_time_picker(update, context)
+
+
+async def _show_end_time_picker(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    start_hour = context.user_data["schedule_start_hour"]
+    keyboard = []
+    row = []
+    for h in range(start_hour + 1, 24):
+        row.append(InlineKeyboardButton(f"{h:02d}:00", callback_data=f"sched_en_{h:02d}"))
+        if len(row) == 6:
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
+    keyboard.append([InlineKeyboardButton("\U0001f519 Back", callback_data="sched_back_start")])
+
+    await update.callback_query.edit_message_text(
+        f"Start: {start_hour:02d}:00\nSelect end time:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+    return SCHEDULE_END_TIME
+
+
+async def schedule_end_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+
+    if data == "sched_back_start":
+        return await _show_start_time_picker(update, context)
+
+    end_hour = int(data.split("_")[-1])
+    day_idx = context.user_data["schedule_selected_day"]
+    start_hour = context.user_data["schedule_start_hour"]
+
+    draft = context.user_data["schedule_draft"]
+    draft.setdefault(day_idx, []).append((f"{start_hour:02d}:00", f"{end_hour:02d}:00"))
+
+    return await _show_day_action(update, context)
+
+
+async def _show_schedule_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    draft = context.user_data["schedule_draft"]
+    lines = ["<b>Schedule preview:</b>"]
+    for day_idx in range(7):
+        windows = draft.get(day_idx, [])
+        if windows:
+            times = ", ".join(f"{s}\u2013{e}" for s, e in windows)
+            lines.append(f"{sch.DISPLAY_NAMES[day_idx]}: {times}")
+        else:
+            lines.append(f"{sch.DISPLAY_NAMES[day_idx]}: OFF")
+    lines.append("")
+    lines.append("Save this schedule?")
+
+    keyboard = [
+        [
+            InlineKeyboardButton("\u2705 Yes", callback_data="sched_save_yes"),
+            InlineKeyboardButton("\u274c No", callback_data="sched_save_no"),
+        ],
+        [InlineKeyboardButton("\U0001f519 Back", callback_data="sched_back_days")],
+    ]
+
+    await update.callback_query.edit_message_text(
+        "\n".join(lines), reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML"
+    )
+    return SCHEDULE_CONFIRM
+
+
+async def schedule_confirm_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+
+    if data == "sched_back_days":
+        return await _show_schedule_day_selector(update, context)
+
+    if data == "sched_save_no":
+        logger.info("Sitter declined schedule save")
+        await query.edit_message_text("Schedule unchanged. Use /set_schedule to start over.")
+        context.user_data.clear()
         return ConversationHandler.END
 
-    text = update.message.text.strip()
-    lines = text.split("\n")
+    draft = context.user_data["schedule_draft"]
     slots = []
-    errors = []
-
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-        if line.upper().endswith(" OFF"):
-            continue
-        parsed = sch.parse_schedule_line(line)
-        if parsed is None:
-            errors.append(line)
-        else:
-            slots.append(parsed)
-
-    if errors:
-        logger.info("Sitter schedule input had %d parse error(s)", len(errors))
-        await update.message.reply_text(
-            f"Could not parse these lines:\n" + "\n".join(errors)
-            + "\n\nSend /cancel to abort or fix the lines above."
-        )
-        return SCHEDULE_INPUT
+    for day_idx, windows in draft.items():
+        for s, e in windows:
+            slots.append((day_idx, s, e))
 
     if not slots:
-        await update.message.reply_text(
-            "No valid time windows found. Schedule unchanged."
-        )
+        await query.edit_message_text("No time windows configured. Schedule unchanged.")
+        context.user_data.clear()
         return ConversationHandler.END
 
     db.set_schedule(slots)
     logger.info("Sitter updated schedule with %d window(s)", len(slots))
     new_schedule = db.get_schedule()
-    await update.message.reply_text(
-        "✅ Schedule updated!\n\n" + sch.format_schedule(new_schedule)
+    await query.edit_message_text(
+        "\u2705 Schedule updated!\n\n" + sch.format_schedule(new_schedule)
     )
+    context.user_data.clear()
     return ConversationHandler.END
 
 
 async def set_schedule_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     logger.info("Sitter cancelled schedule edit")
     await update.message.reply_text("Schedule unchanged.")
+    context.user_data.clear()
     return ConversationHandler.END
+
+
+async def set_schedule_unexpected(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    logger.info(
+        "Sitter sent unexpected input during schedule edit: %s",
+        update.message.text,
+    )
+    await update.message.reply_text(
+        "Please use the buttons above, or type /cancel to exit."
+    )
+    return SCHEDULE_DAYS
 
 
 set_schedule_conv = ConversationHandler(
     entry_points=[CommandHandler("set_schedule", set_schedule_start)],
     states={
-        SCHEDULE_INPUT: [
-            MessageHandler(filters.TEXT & ~filters.COMMAND, set_schedule_receive),
+        SCHEDULE_DAYS: [
+            CallbackQueryHandler(schedule_day_chosen, pattern="^sched_day_|^sched_done$"),
+        ],
+        SCHEDULE_DAY_ACTION: [
+            CallbackQueryHandler(schedule_day_action_chosen, pattern="^sched_add$|^sched_clear$|^sched_back_days$"),
+        ],
+        SCHEDULE_START_TIME: [
+            CallbackQueryHandler(schedule_start_chosen, pattern="^sched_st_|^sched_back_action$"),
+        ],
+        SCHEDULE_END_TIME: [
+            CallbackQueryHandler(schedule_end_chosen, pattern="^sched_en_|^sched_back_start$"),
+        ],
+        SCHEDULE_CONFIRM: [
+            CallbackQueryHandler(schedule_confirm_chosen, pattern="^sched_save_|^sched_back_days$"),
         ],
     },
     fallbacks=[
         CommandHandler("cancel", set_schedule_cancel),
+        MessageHandler(filters.TEXT & ~filters.COMMAND, set_schedule_unexpected),
     ],
 )
 
