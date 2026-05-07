@@ -34,7 +34,7 @@ def main() -> None:
     app.add_handler(CommandHandler("help", handlers.help_command))
     app.add_handler(handlers.book_conv)
     app.add_handler(CommandHandler("my_bookings", handlers.my_bookings))
-    app.add_handler(CommandHandler("cancel", handlers.cancel_cmd))
+    app.add_handler(handlers.cancel_conv)
     app.add_handler(CommandHandler("available", handlers.available))
     app.add_handler(handlers.set_schedule_conv)
     app.add_handler(CommandHandler("admin", handlers.admin))

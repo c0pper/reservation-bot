@@ -19,6 +19,7 @@ import scheduler as sch
 from notifier import SITTER_USER_ID, notify_sitter
 
 DATE, START_TIME, DURATION, CONFIRM = range(4)
+CANCEL_SELECT, CANCEL_CONFIRM = range(2)
 
 HELP_TEXT = (
     "Available commands:\n"
@@ -26,7 +27,7 @@ HELP_TEXT = (
     "/help - Show this help message\n"
     "/book - Book a reservation with the sitter\n"
     "/my_bookings - View your upcoming bookings\n"
-    "/cancel <id> - Cancel a booking\n"
+    "/cancel - Cancel a booking\n"
     "/available [date] - Show available time slots\n"
 )
 
@@ -385,7 +386,7 @@ async def confirm_booking(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         f"Date: {d.strftime('%A, %d %B %Y')}\n"
         f"Time: {start_time} – {end_time}\n"
         f"Booking ID: #{booking_id}\n\n"
-        f"Use /my_bookings to view your bookings or /cancel {booking_id} to cancel."
+        f"Use /my_bookings to view your bookings or /cancel to cancel it."
     )
 
     await notify_sitter(
@@ -459,37 +460,186 @@ async def my_bookings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         lines.append(
             f"  #{b['id']} — {d.strftime('%a, %d %b %Y')} {b['start_time']}–{b['end_time']}"
         )
-    lines.append("\nUse /cancel <id> to cancel a booking.")
+    lines.append("\nUse /cancel to cancel a booking.")
     await update.message.reply_text("\n".join(lines))
 
 
-# ── /cancel ─────────────────────────────────────────────────────────────
+# ── /cancel conversation ────────────────────────────────────────────────
 
-async def cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def cancel_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user = update.effective_user
-    args = context.args
-    if not args or not args[0].isdigit():
-        logger.info("User %d invalid /cancel syntax: %s", user.id, args)
-        await update.message.reply_text("Usage: /cancel <booking_id>")
-        return
-
-    booking_id = int(args[0])
     is_sitter = _is_sitter(update)
+
+    if is_sitter:
+        bookings = db.get_all_bookings()
+    else:
+        bookings = db.get_user_bookings(user.id)
+
+    if not bookings:
+        logger.info("User %d (%s) ran /cancel: no bookings", user.id, user.first_name)
+        await update.message.reply_text("You have no upcoming bookings to cancel.")
+        return ConversationHandler.END
+
+    logger.info(
+        "User %d (%s) started /cancel (%d bookings)", user.id, user.first_name, len(bookings)
+    )
+
+    keyboard = []
+    for b in bookings:
+        d = date.fromisoformat(b["date"])
+        label = f"#{b['id']} \u2014 {d.strftime('%a, %d %b')} {b['start_time']}\u2013{b['end_time']}"
+        keyboard.append([InlineKeyboardButton(label, callback_data=f"cancel_sel_{b['id']}")])
+
+    keyboard.append([InlineKeyboardButton("\u274c Cancel", callback_data="cancel_exit")])
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text("Select a booking to cancel:", reply_markup=reply_markup)
+    return CANCEL_SELECT
+
+
+async def cancel_select(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    user = update.effective_user
+
+    data = query.data
+    if data == "cancel_exit":
+        logger.info("User %d exited cancel flow", user.id)
+        await query.edit_message_text("Cancellation aborted.")
+        context.user_data.clear()
+        return ConversationHandler.END
+
+    booking_id = int(data.split("_")[-1])
+    context.user_data["cancel_booking_id"] = booking_id
+    context.user_data["cancel_is_sitter"] = _is_sitter(update)
+
+    if _is_sitter(update):
+        bookings = db.get_all_bookings()
+    else:
+        bookings = db.get_user_bookings(user.id)
+
+    booking = next((b for b in bookings if b["id"] == booking_id), None)
+    if not booking:
+        await query.edit_message_text("Booking no longer available.")
+        context.user_data.clear()
+        return ConversationHandler.END
+
+    d = date.fromisoformat(booking["date"])
+    text = (
+        f"Cancel this booking?\n\n"
+        f"#{booking['id']} \u2014 {d.strftime('%A, %d %B %Y')}\n"
+        f"{booking['start_time']} \u2013 {booking['end_time']}"
+    )
+
+    keyboard = [
+        [
+            InlineKeyboardButton("\u2705 Yes, cancel", callback_data="cancel_yes"),
+            InlineKeyboardButton("\u25c0 No, go back", callback_data="cancel_no"),
+        ],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.edit_message_text(text, reply_markup=reply_markup)
+    return CANCEL_CONFIRM
+
+
+async def cancel_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    user = update.effective_user
+
+    data = query.data
+    if data == "cancel_no":
+        logger.info("User %d went back from cancel confirmation", user.id)
+        return await _show_cancel_list(update, context)
+
+    if data == "cancel_exit":
+        await query.edit_message_text("Cancellation aborted.")
+        context.user_data.clear()
+        return ConversationHandler.END
+
+    booking_id = context.user_data.get("cancel_booking_id")
+    is_sitter = context.user_data.get("cancel_is_sitter", False)
 
     success = db.cancel_booking(booking_id, user.id, sitter_mode=is_sitter)
     if success:
         logger.info("User %d (%s) cancelled booking #%d", user.id, user.first_name, booking_id)
-        await update.message.reply_text(f"Booking #{booking_id} has been cancelled.")
+        await query.edit_message_text(f"\u2705 Booking #{booking_id} has been cancelled.")
         if not is_sitter:
             await notify_sitter(
                 context.bot,
-                f"❌ Booking #{booking_id} cancelled by customer {user.first_name}.",
+                f"\u274c Booking #{booking_id} cancelled by customer {user.first_name}.",
             )
     else:
-        logger.info("User %d failed to cancel booking #%d: not found or not owned", user.id, booking_id)
-        await update.message.reply_text(
-            "Could not cancel. Check the booking ID and that it belongs to you."
+        logger.info("User %d failed to cancel booking #%d", user.id, booking_id)
+        await query.edit_message_text(
+            "Could not cancel. It may no longer exist or belong to you."
         )
+
+    context.user_data.clear()
+    return ConversationHandler.END
+
+
+async def _show_cancel_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user = update.effective_user
+    is_sitter = _is_sitter(update)
+
+    if is_sitter:
+        bookings = db.get_all_bookings()
+    else:
+        bookings = db.get_user_bookings(user.id)
+
+    if not bookings:
+        query = update.callback_query
+        await query.edit_message_text("You have no upcoming bookings to cancel.")
+        context.user_data.clear()
+        return ConversationHandler.END
+
+    keyboard = []
+    for b in bookings:
+        d = date.fromisoformat(b["date"])
+        label = f"#{b['id']} \u2014 {d.strftime('%a, %d %b')} {b['start_time']}\u2013{b['end_time']}"
+        keyboard.append([InlineKeyboardButton(label, callback_data=f"cancel_sel_{b['id']}")])
+
+    keyboard.append([InlineKeyboardButton("\u274c Cancel", callback_data="cancel_exit")])
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    query = update.callback_query
+    await query.edit_message_text("Select a booking to cancel:", reply_markup=reply_markup)
+    return CANCEL_SELECT
+
+
+async def cancel_abort(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    logger.info("User %d aborted cancel conversation", update.effective_user.id)
+    await update.message.reply_text("Cancellation aborted.")
+    context.user_data.clear()
+    return ConversationHandler.END
+
+
+async def cancel_unexpected(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    logger.info(
+        "User %d sent unexpected input during cancel: %s",
+        update.effective_user.id,
+        update.message.text,
+    )
+    await update.message.reply_text("Please use the buttons above, or type /cancel to exit.")
+    return CANCEL_SELECT
+
+
+cancel_conv = ConversationHandler(
+    entry_points=[CommandHandler("cancel", cancel_start)],
+    states={
+        CANCEL_SELECT: [
+            CallbackQueryHandler(cancel_select, pattern="^cancel_sel_|^cancel_exit$"),
+        ],
+        CANCEL_CONFIRM: [
+            CallbackQueryHandler(cancel_confirm, pattern="^cancel_yes$|^cancel_no$|^cancel_exit$"),
+        ],
+    },
+    fallbacks=[
+        CommandHandler("cancel", cancel_abort),
+        MessageHandler(filters.TEXT & ~filters.COMMAND, cancel_unexpected),
+    ],
+)
 
 
 # ── /available ──────────────────────────────────────────────────────────
