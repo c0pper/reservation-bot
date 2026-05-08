@@ -112,6 +112,7 @@ async def book_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         )
         return ConversationHandler.END
 
+    keyboard.append([InlineKeyboardButton("❌ Cancel", callback_data="cancel")])
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text("Select a date (available slots only):", reply_markup=reply_markup)
     return DATE
@@ -154,6 +155,7 @@ async def _show_date_picker(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         context.user_data.clear()
         return ConversationHandler.END
 
+    keyboard.append([InlineKeyboardButton("❌ Cancel", callback_data="cancel")])
     reply_markup = InlineKeyboardMarkup(keyboard)
     query = update.callback_query
     await query.edit_message_text("Select a date (available slots only):", reply_markup=reply_markup)
@@ -166,6 +168,8 @@ async def date_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     user = update.effective_user
 
     data = query.data
+    if data == "cancel":
+        return await _booking_cancel(update, context)
     if data == "noop":
         logger.info("User %d tapped a disabled date", user.id)
         await query.answer("No availability this day.", show_alert=False)
@@ -210,7 +214,7 @@ async def _show_time_picker(
             row = []
     if row:
         keyboard.append(row)
-    keyboard.append([InlineKeyboardButton("◀ Back", callback_data="back")])
+    keyboard.append([InlineKeyboardButton("◀ Back", callback_data="back"), InlineKeyboardButton("❌ Cancel", callback_data="cancel")])
 
     reply_markup = InlineKeyboardMarkup(keyboard)
     query = update.callback_query
@@ -227,6 +231,8 @@ async def time_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     user = update.effective_user
 
     data = query.data
+    if data == "cancel":
+        return await _booking_cancel(update, context)
     if data == "back":
         logger.info("User %d went back from time picker", user.id)
         return await _show_date_picker(update, context)
@@ -266,7 +272,7 @@ async def _show_duration_picker(
         label = f"{hours}h (until {e})"
         keyboard.append([InlineKeyboardButton(label, callback_data=f"dur_{e}")])
 
-    keyboard.append([InlineKeyboardButton("◀ Back", callback_data="back")])
+    keyboard.append([InlineKeyboardButton("◀ Back", callback_data="back"), InlineKeyboardButton("❌ Cancel", callback_data="cancel")])
     reply_markup = InlineKeyboardMarkup(keyboard)
     query = update.callback_query
     await query.edit_message_text(
@@ -282,6 +288,8 @@ async def duration_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     user = update.effective_user
 
     data = query.data
+    if data == "cancel":
+        return await _booking_cancel(update, context)
     if data == "back":
         logger.info("User %d went back from duration picker", user.id)
         date_str = context.user_data["booking_date"]
@@ -320,7 +328,7 @@ async def _show_confirmation(
             InlineKeyboardButton("✅ Yes", callback_data="confirm_yes"),
             InlineKeyboardButton("❌ No", callback_data="confirm_no"),
         ],
-        [InlineKeyboardButton("◀ Back", callback_data="back")],
+        [InlineKeyboardButton("◀ Back", callback_data="back"), InlineKeyboardButton("❌ Cancel", callback_data="cancel")],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -333,6 +341,9 @@ async def confirm_booking(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     query = update.callback_query
     await query.answer()
     user = update.effective_user
+
+    if query.data == "cancel":
+        return await _booking_cancel(update, context)
 
     if query.data == "confirm_no":
         logger.info("User %d declined booking confirmation", user.id)
@@ -407,6 +418,15 @@ async def book_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     return ConversationHandler.END
 
 
+async def _booking_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    logger.info("User %d cancelled booking via button", update.effective_user.id)
+    await query.edit_message_text("Booking cancelled. Use /book to start over.")
+    context.user_data.clear()
+    return ConversationHandler.END
+
+
 async def book_unexpected(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     logger.info(
         "User %d sent unexpected input during booking: %s",
@@ -423,16 +443,16 @@ book_conv = ConversationHandler(
     entry_points=[CommandHandler("book", book_start)],
     states={
         DATE: [
-            CallbackQueryHandler(date_chosen, pattern="^(date_|noop|back)"),
+            CallbackQueryHandler(date_chosen, pattern="^(date_|noop|back|cancel)"),
         ],
         START_TIME: [
-            CallbackQueryHandler(time_chosen, pattern="^(time_|back)"),
+            CallbackQueryHandler(time_chosen, pattern="^(time_|back|cancel)"),
         ],
         DURATION: [
-            CallbackQueryHandler(duration_chosen, pattern="^(dur_|back)"),
+            CallbackQueryHandler(duration_chosen, pattern="^(dur_|back|cancel)"),
         ],
         CONFIRM: [
-            CallbackQueryHandler(confirm_booking, pattern="^(confirm_yes|confirm_no|back)$"),
+            CallbackQueryHandler(confirm_booking, pattern="^(confirm_yes|confirm_no|back|cancel)$"),
         ],
     },
     fallbacks=[
