@@ -16,7 +16,7 @@ BOT_TOKEN="xxx" SITTER_USER_ID="123456" uv run python src/main.py   # run the bo
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `BOT_TOKEN` | Yes | — | Telegram bot token from @BotFather |
-| `SITTER_USER_ID` | Yes | — | Telegram user ID of the sitter (for admin commands) |
+| `SITTER_USER_ID` | Yes | — | Telegram user ID(s) of the sitter — comma-separated for multiple (for admin commands) |
 | `DATABASE_PATH` | No | `data/reservations.db` | Path to SQLite database file |
 
 The local `.env` file exists but is **not** loaded automatically — do not commit it.

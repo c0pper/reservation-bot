@@ -16,7 +16,7 @@ from telegram.ext import (
 
 import db
 import scheduler as sch
-from notifier import SITTER_USER_ID, notify_sitter
+from notifier import SITTER_USER_IDS, notify_sitter
 
 DATE, START_TIME, DURATION, CHILDREN, CONFIRM = range(5)
 CANCEL_SELECT, CANCEL_CONFIRM = range(2)
@@ -39,7 +39,7 @@ SITTER_HELP = (
 
 
 def _is_sitter(update: Update) -> bool:
-    return str(update.effective_user.id) == SITTER_USER_ID
+    return str(update.effective_user.id) in SITTER_USER_IDS
 
 
 # ── /start ──────────────────────────────────────────────────────────────
