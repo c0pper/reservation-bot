@@ -28,7 +28,7 @@ HELP_TEXT = (
     "/book - Book a reservation with the sitter\n"
     "/my_bookings - View your upcoming bookings\n"
     "/cancel - Cancel a booking\n"
-    "/available [date] - Show available time slots\n"
+    "/available - Show all available time slots\n"
 )
 
 SITTER_HELP = (
@@ -719,46 +719,34 @@ cancel_conv = ConversationHandler(
 
 async def available(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
-    args = context.args
-    target = date.today()
-    if args:
-        try:
-            target = date.fromisoformat(args[0])
-        except ValueError:
-            logger.info("User %d invalid /available date: %s", user.id, args[0])
-            await update.message.reply_text(
-                "Invalid date. Use YYYY-MM-DD format, e.g. /available 2026-05-10"
-            )
-            return
-
     schedule = db.get_schedule()
     if not schedule:
-        await update.message.reply_text(
-            "No schedule has been configured yet."
-        )
+        await update.message.reply_text("No schedule has been configured yet.")
         return
 
-    bookings = db.get_bookings_for_date(target.isoformat())
-    now_str = datetime.now().strftime("%H:%M") if target == date.today() else None
-    starts = sch.get_available_start_times(schedule, bookings, target, current_time=now_str)
-    logger.info("User %d checked availability for %s: %d slots", user.id, target.isoformat(), len(starts))
+    today = date.today()
+    lines = ["Available slots in the next 14 days:"]
 
-    if not starts:
-        weekday = target.weekday()
-        has_sched = any(s["day_of_week"] == weekday for s in schedule)
-        if not has_sched:
-            await update.message.reply_text(
-                f"No schedule for {target.strftime('%A, %d %B')}."
-            )
-        else:
-            await update.message.reply_text(
-                f"No available slots on {target.strftime('%A, %d %B')}."
-            )
+    for i in range(14):
+        d = today + timedelta(days=i)
+        weekday = d.weekday()
+        if not any(s["day_of_week"] == weekday for s in schedule):
+            continue
+        bookings = db.get_bookings_for_date(d.isoformat())
+        now_str = datetime.now().strftime("%H:%M") if d == today else None
+        starts = sch.get_available_start_times(schedule, bookings, d, current_time=now_str)
+        if not starts:
+            continue
+        lines.append(f"\n{d.strftime('%a %d %b')}:")
+        for t in starts:
+            lines.append(f"  \u2022 {t}")
+
+    logger.info("User %d checked availability: %d days with slots", user.id, len(lines) - 1)
+
+    if len(lines) == 1:
+        await update.message.reply_text("No available slots in the next 14 days.")
         return
 
-    lines = [f"Available slots for {target.strftime('%A, %d %B')}:"]
-    for t in starts:
-        lines.append(f"  • {t}")
     await update.message.reply_text("\n".join(lines))
 
 
