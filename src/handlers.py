@@ -18,7 +18,7 @@ import db
 import scheduler as sch
 from notifier import SITTER_USER_ID, notify_sitter
 
-DATE, START_TIME, DURATION, CONFIRM = range(4)
+DATE, START_TIME, DURATION, CHILDREN, CONFIRM = range(5)
 CANCEL_SELECT, CANCEL_CONFIRM = range(2)
 
 HELP_TEXT = (
@@ -298,6 +298,48 @@ async def duration_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     end_time = data.split("_", 1)[1]
     logger.info("User %d selected end time %s", user.id, end_time)
     context.user_data["booking_end"] = end_time
+    return await _show_children_picker(update, context)
+
+
+async def _show_children_picker(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    query = update.callback_query
+    keyboard = []
+    row = []
+    for i in range(1, 11):
+        row.append(InlineKeyboardButton(str(i), callback_data=f"child_{i}"))
+        if len(row) == 5:
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
+    keyboard.append([InlineKeyboardButton("◀ Back", callback_data="back"), InlineKeyboardButton("❌ Cancel", callback_data="cancel")])
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.edit_message_text(
+        "How many children?",
+        reply_markup=reply_markup,
+    )
+    return CHILDREN
+
+
+async def children_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    user = update.effective_user
+
+    data = query.data
+    if data == "cancel":
+        return await _booking_cancel(update, context)
+    if data == "back":
+        logger.info("User %d went back from children picker", user.id)
+        date_str = context.user_data["booking_date"]
+        start_time = context.user_data["booking_start"]
+        return await _show_duration_picker(update, context, date_str, start_time)
+
+    children = int(data.split("_", 1)[1])
+    logger.info("User %d selected %d children", user.id, children)
+    context.user_data["booking_children"] = children
     return await _show_confirmation(update, context)
 
 
@@ -308,7 +350,8 @@ async def _show_confirmation(
     date_str = context.user_data["booking_date"]
     start_time = context.user_data["booking_start"]
     end_time = context.user_data["booking_end"]
-    logger.info("User %d: showing confirmation for %s %s-%s", user.id, date_str, start_time, end_time)
+    children = context.user_data.get("booking_children", 1)
+    logger.info("User %d: showing confirmation for %s %s-%s (%d children)", user.id, date_str, start_time, end_time, children)
 
     d = date.fromisoformat(date_str)
     start_min = sch._to_min(start_time)
@@ -319,6 +362,7 @@ async def _show_confirmation(
         f"📋 Booking Summary\n"
         f"Date: {d.strftime('%A, %d %B %Y')}\n"
         f"Time: {start_time} – {end_time} ({hours} hour{'s' if hours > 1 else ''})\n"
+        f"Children: {children}\n"
         f"Name: {user.first_name}\n\n"
         f"Confirm?"
     )
@@ -353,9 +397,7 @@ async def confirm_booking(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     if query.data == "back":
         logger.info("User %d went back from confirmation", user.id)
-        date_str = context.user_data["booking_date"]
-        start_time = context.user_data["booking_start"]
-        return await _show_duration_picker(update, context, date_str, start_time)
+        return await _show_children_picker(update, context)
 
     date_str = context.user_data["booking_date"]
     start_time = context.user_data["booking_start"]
@@ -384,8 +426,9 @@ async def confirm_booking(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         context.user_data.clear()
         return ConversationHandler.END
 
+    children = context.user_data.get("booking_children", 1)
     booking_id = db.add_booking(
-        user.id, user.first_name, date_str, start_time, end_time
+        user.id, user.first_name, date_str, start_time, end_time, children
     )
     logger.info(
         "User %d (%s) confirmed booking #%d: %s %s-%s",
@@ -396,6 +439,7 @@ async def confirm_booking(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         f"✅ Booking confirmed!\n"
         f"Date: {d.strftime('%A, %d %B %Y')}\n"
         f"Time: {start_time} – {end_time}\n"
+        f"Children: {children}\n"
         f"Booking ID: #{booking_id}\n\n"
         f"Use /my_bookings to view your bookings or /cancel to cancel it."
     )
@@ -405,7 +449,8 @@ async def confirm_booking(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         f"✅ New booking #{booking_id}\n"
         f"Customer: {user.first_name} (ID: {user.id})\n"
         f"Date: {d.strftime('%A, %d %B %Y')}\n"
-        f"Time: {start_time} – {end_time}",
+        f"Time: {start_time} – {end_time}\n"
+        f"Children: {children}",
     )
 
     context.user_data.clear()
@@ -451,6 +496,9 @@ book_conv = ConversationHandler(
         DURATION: [
             CallbackQueryHandler(duration_chosen, pattern="^(dur_|back|cancel)"),
         ],
+        CHILDREN: [
+            CallbackQueryHandler(children_chosen, pattern="^(child_|back|cancel)"),
+        ],
         CONFIRM: [
             CallbackQueryHandler(confirm_booking, pattern="^(confirm_yes|confirm_no|back|cancel)$"),
         ],
@@ -477,8 +525,9 @@ async def my_bookings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     lines = ["Your upcoming bookings:"]
     for b in bookings:
         d = date.fromisoformat(b["date"])
+        c = b.get("children", 1)
         lines.append(
-            f"  #{b['id']} — {d.strftime('%a, %d %b %Y')} {b['start_time']}–{b['end_time']}"
+            f"  #{b['id']} — {d.strftime('%a, %d %b %Y')} {b['start_time']}–{b['end_time']} ({c} {'child' if c == 1 else 'children'})"
         )
     lines.append("\nUse /cancel to cancel a booking.")
     await update.message.reply_text("\n".join(lines))
@@ -507,7 +556,8 @@ async def cancel_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     keyboard = []
     for b in bookings:
         d = date.fromisoformat(b["date"])
-        label = f"#{b['id']} \u2014 {d.strftime('%a, %d %b')} {b['start_time']}\u2013{b['end_time']}"
+        c = b.get("children", 1)
+        label = f"#{b['id']} \u2014 {d.strftime('%a, %d %b')} {b['start_time']}\u2013{b['end_time']} ({c})"
         keyboard.append([InlineKeyboardButton(label, callback_data=f"cancel_sel_{b['id']}")])
 
     keyboard.append([InlineKeyboardButton("\u274c Cancel", callback_data="cancel_exit")])
@@ -545,10 +595,12 @@ async def cancel_select(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         return ConversationHandler.END
 
     d = date.fromisoformat(booking["date"])
+    c = booking.get("children", 1)
     text = (
         f"Cancel this booking?\n\n"
-        f"#{booking['id']} \u2014 {d.strftime('%A, %d %B %Y')}\n"
-        f"{booking['start_time']} \u2013 {booking['end_time']}"
+        f"#{booking['id']} — {d.strftime('%A, %d %B %Y')}\n"
+        f"{booking['start_time']} – {booking['end_time']}\n"
+        f"{c} {'child' if c == 1 else 'children'}"
     )
 
     keyboard = [
@@ -617,7 +669,8 @@ async def _show_cancel_list(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     keyboard = []
     for b in bookings:
         d = date.fromisoformat(b["date"])
-        label = f"#{b['id']} \u2014 {d.strftime('%a, %d %b')} {b['start_time']}\u2013{b['end_time']}"
+        c = b.get("children", 1)
+        label = f"#{b['id']} \u2014 {d.strftime('%a, %d %b')} {b['start_time']}\u2013{b['end_time']} ({c})"
         keyboard.append([InlineKeyboardButton(label, callback_data=f"cancel_sel_{b['id']}")])
 
     keyboard.append([InlineKeyboardButton("\u274c Cancel", callback_data="cancel_exit")])
@@ -1028,9 +1081,11 @@ async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     lines = ["📋 All upcoming confirmed bookings:"]
     for b in bookings:
         d = date.fromisoformat(b["date"])
+        c = b.get("children", 1)
         lines.append(
             f"  #{b['id']} — {d.strftime('%a, %d %b %Y')} "
             f"{b['start_time']}–{b['end_time']} | "
+            f"{c} {'child' if c == 1 else 'children'} | "
             f"{b['user_name']} (ID: {b['user_id']})"
         )
     await update.message.reply_text("\n".join(lines))

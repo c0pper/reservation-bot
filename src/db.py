@@ -34,6 +34,7 @@ def init_db() -> None:
             date TEXT NOT NULL,
             start_time TEXT NOT NULL,
             end_time TEXT NOT NULL,
+            children INTEGER NOT NULL DEFAULT 1,
             status TEXT NOT NULL DEFAULT 'confirmed'
                 CHECK(status IN ('confirmed', 'cancelled')),
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -43,6 +44,10 @@ def init_db() -> None:
         CREATE INDEX IF NOT EXISTS idx_bookings_user ON bookings(user_id);
         CREATE INDEX IF NOT EXISTS idx_bookings_status ON bookings(status);
     """)
+    try:
+        conn.execute("ALTER TABLE bookings ADD COLUMN children INTEGER NOT NULL DEFAULT 1")
+    except sqlite3.OperationalError:
+        pass
     conn.commit()
     conn.close()
 
@@ -69,12 +74,12 @@ def set_schedule(slots: list[tuple[int, str, str]]) -> None:
 
 
 def add_booking(
-    user_id: int, user_name: str, date: str, start_time: str, end_time: str
+    user_id: int, user_name: str, date: str, start_time: str, end_time: str, children: int = 1
 ) -> int:
     conn = get_conn()
     cur = conn.execute(
-        "INSERT INTO bookings (user_id, user_name, date, start_time, end_time) VALUES (?, ?, ?, ?, ?)",
-        (user_id, user_name, date, start_time, end_time),
+        "INSERT INTO bookings (user_id, user_name, date, start_time, end_time, children) VALUES (?, ?, ?, ?, ?, ?)",
+        (user_id, user_name, date, start_time, end_time, children),
     )
     conn.commit()
     booking_id = cur.lastrowid
@@ -112,7 +117,7 @@ def cancel_booking(booking_id: int, user_id: int, sitter_mode: bool = False) -> 
 def get_user_bookings(user_id: int, status: str = "confirmed") -> list[dict]:
     conn = get_conn()
     rows = conn.execute(
-        "SELECT id, date, start_time, end_time, status FROM bookings WHERE user_id = ? AND status = ? AND date >= date('now') ORDER BY date, start_time",
+        "SELECT id, date, start_time, end_time, children, status FROM bookings WHERE user_id = ? AND status = ? AND date >= date('now') ORDER BY date, start_time",
         (user_id, status),
     )
     result = [dict(r) for r in rows.fetchall()]
@@ -134,7 +139,7 @@ def get_bookings_for_date(date_str: str) -> list[dict]:
 def get_all_bookings(status: str = "confirmed") -> list[dict]:
     conn = get_conn()
     rows = conn.execute(
-        "SELECT id, user_id, user_name, date, start_time, end_time, status, created_at FROM bookings WHERE status = ? AND date >= date('now') ORDER BY date, start_time",
+        "SELECT id, user_id, user_name, date, start_time, end_time, children, status, created_at FROM bookings WHERE status = ? AND date >= date('now') ORDER BY date, start_time",
         (status,),
     )
     result = [dict(r) for r in rows.fetchall()]
