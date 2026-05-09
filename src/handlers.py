@@ -15,27 +15,12 @@ from telegram.ext import (
 )
 
 import db
+import strings
 import scheduler as sch
 from notifier import SITTER_USER_IDS, notify_sitter
 
 DATE, START_TIME, DURATION, CHILDREN, CONFIRM = range(5)
 CANCEL_SELECT, CANCEL_CONFIRM = range(2)
-
-HELP_TEXT = (
-    "Available commands:\n"
-    "/start - Start the bot\n"
-    "/help - Show this help message\n"
-    "/book - Book a reservation with the sitter\n"
-    "/my_bookings - View your upcoming bookings\n"
-    "/cancel - Cancel a booking\n"
-    "/available - Show all available time slots\n"
-)
-
-SITTER_HELP = (
-    "\nSitter commands:\n"
-    "/set_schedule - Configure the weekly schedule\n"
-    "/admin - View all upcoming bookings\n"
-)
 
 
 def _is_sitter(update: Update) -> bool:
@@ -47,11 +32,7 @@ def _is_sitter(update: Update) -> bool:
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     logger.info("User %d (%s) ran /start", user.id, user.first_name)
-    text = (
-        f"Hello {user.first_name}! I'm the baby sitter reservation bot.\n\n"
-        "Use /help to see available commands or /book to make a reservation."
-    )
-    await update.message.reply_text(text)
+    await update.message.reply_text(strings.fmt_start(user.first_name))
 
 
 # ── /help ───────────────────────────────────────────────────────────────
@@ -60,9 +41,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     user = update.effective_user
     is_sitter = _is_sitter(update)
     logger.info("User %d (%s) ran /help (sitter=%s)", user.id, user.first_name, is_sitter)
-    text = HELP_TEXT
+    text = strings.HELP_TEXT
     if is_sitter:
-        text += SITTER_HELP
+        text += strings.SITTER_HELP
     await update.message.reply_text(text)
 
 
@@ -73,9 +54,7 @@ async def book_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     schedule = db.get_schedule()
     if not schedule:
         logger.info("User %d (%s) tried /book but no schedule exists", user.id, user.first_name)
-        await update.message.reply_text(
-            "No schedule has been configured yet. Please try again later."
-        )
+        await update.message.reply_text(strings.NO_SCHEDULE)
         return ConversationHandler.END
 
     logger.info("User %d (%s) started /book", user.id, user.first_name)
@@ -94,7 +73,7 @@ async def book_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         starts = sch.get_available_start_times(schedule, bookings, d, current_time=now_str)
         if not starts:
             continue
-        label = d.strftime("%a %d")
+        label = strings.fmt_date_short(d)
         row.append(
             InlineKeyboardButton(label, callback_data=f"date_{d.isoformat()}")
         )
@@ -107,14 +86,12 @@ async def book_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         keyboard.append(row)
 
     if not keyboard:
-        await update.message.reply_text(
-            "No available slots in the next 14 days. Please try again later."
-        )
+        await update.message.reply_text(strings.NO_SLOTS_14)
         return ConversationHandler.END
 
-    keyboard.append([InlineKeyboardButton("❌ Cancel", callback_data="cancel")])
+    keyboard.append([InlineKeyboardButton(strings.BTN_CANCEL, callback_data="cancel")])
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("Select a date (available slots only):", reply_markup=reply_markup)
+    await update.message.reply_text(strings.SELECT_DATE, reply_markup=reply_markup)
     return DATE
 
 
@@ -135,7 +112,7 @@ async def _show_date_picker(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         starts = sch.get_available_start_times(schedule, bookings, d, current_time=now_str)
         if not starts:
             continue
-        label = d.strftime("%a %d")
+        label = strings.fmt_date_short(d)
         row.append(
             InlineKeyboardButton(label, callback_data=f"date_{d.isoformat()}")
         )
@@ -149,16 +126,14 @@ async def _show_date_picker(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     if not keyboard:
         query = update.callback_query
-        await query.edit_message_text(
-            "No available slots in the next 14 days. Please try again later."
-        )
+        await query.edit_message_text(strings.NO_SLOTS_14)
         context.user_data.clear()
         return ConversationHandler.END
 
-    keyboard.append([InlineKeyboardButton("❌ Cancel", callback_data="cancel")])
+    keyboard.append([InlineKeyboardButton(strings.BTN_CANCEL, callback_data="cancel")])
     reply_markup = InlineKeyboardMarkup(keyboard)
     query = update.callback_query
-    await query.edit_message_text("Select a date (available slots only):", reply_markup=reply_markup)
+    await query.edit_message_text(strings.SELECT_DATE, reply_markup=reply_markup)
     return DATE
 
 
@@ -172,7 +147,7 @@ async def date_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
         return await _booking_cancel(update, context)
     if data == "noop":
         logger.info("User %d tapped a disabled date", user.id)
-        await query.answer("No availability this day.", show_alert=False)
+        await query.answer(strings.NO_AVAILABILITY_DAY, show_alert=False)
         return DATE
     if data == "back":
         return await _show_date_picker(update, context)
@@ -196,11 +171,11 @@ async def _show_time_picker(
     logger.info("User %d: time picker for %s (%d slots)", user.id, date_str, len(starts))
 
     if not starts:
-        keyboard = [[InlineKeyboardButton("◀ Back", callback_data="back")]]
+        keyboard = [[InlineKeyboardButton(strings.BTN_BACK, callback_data="back")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         query = update.callback_query
         await query.edit_message_text(
-            f"No available slots on {d.strftime('%A, %d %B')}. Pick another date.",
+            strings.NO_SLOTS_DATE.format(date=strings.fmt_date_weekday_long(d)),
             reply_markup=reply_markup,
         )
         return DATE
@@ -214,12 +189,12 @@ async def _show_time_picker(
             row = []
     if row:
         keyboard.append(row)
-    keyboard.append([InlineKeyboardButton("◀ Back", callback_data="back"), InlineKeyboardButton("❌ Cancel", callback_data="cancel")])
+    keyboard.append([InlineKeyboardButton(strings.BTN_BACK, callback_data="back"), InlineKeyboardButton(strings.BTN_CANCEL, callback_data="cancel")])
 
     reply_markup = InlineKeyboardMarkup(keyboard)
     query = update.callback_query
     await query.edit_message_text(
-        f"Available times for {d.strftime('%A, %d %B')}:",
+        strings.AVAILABLE_TIMES.format(date=strings.fmt_date_weekday_long(d)),
         reply_markup=reply_markup,
     )
     return START_TIME
@@ -257,11 +232,11 @@ async def _show_duration_picker(
     logger.info("User %d: duration picker for %s at %s (%d options)", user.id, date_str, start_time, len(options))
 
     if not options:
-        keyboard = [[InlineKeyboardButton("◀ Back", callback_data="back")]]
+        keyboard = [[InlineKeyboardButton(strings.BTN_BACK, callback_data="back")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         query = update.callback_query
         await query.edit_message_text(
-            "No duration available for this start time. Please pick another time.",
+            strings.NO_DURATION,
             reply_markup=reply_markup,
         )
         return START_TIME
@@ -269,14 +244,14 @@ async def _show_duration_picker(
     keyboard = []
     for s, e in options:
         hours = (sch._to_min(e) - sch._to_min(s)) // 60
-        label = f"{hours}h (until {e})"
+        label = f"{hours}h (fino alle {e})"
         keyboard.append([InlineKeyboardButton(label, callback_data=f"dur_{e}")])
 
-    keyboard.append([InlineKeyboardButton("◀ Back", callback_data="back"), InlineKeyboardButton("❌ Cancel", callback_data="cancel")])
+    keyboard.append([InlineKeyboardButton(strings.BTN_BACK, callback_data="back"), InlineKeyboardButton(strings.BTN_CANCEL, callback_data="cancel")])
     reply_markup = InlineKeyboardMarkup(keyboard)
     query = update.callback_query
     await query.edit_message_text(
-        f"Duration for {date_str} at {start_time}:",
+        strings.DURATION_FOR.format(date=date_str, time=start_time),
         reply_markup=reply_markup,
     )
     return DURATION
@@ -314,10 +289,10 @@ async def _show_children_picker(
             row = []
     if row:
         keyboard.append(row)
-    keyboard.append([InlineKeyboardButton("◀ Back", callback_data="back"), InlineKeyboardButton("❌ Cancel", callback_data="cancel")])
+    keyboard.append([InlineKeyboardButton(strings.BTN_BACK, callback_data="back"), InlineKeyboardButton(strings.BTN_CANCEL, callback_data="cancel")])
     reply_markup = InlineKeyboardMarkup(keyboard)
     await query.edit_message_text(
-        "How many children?",
+        strings.HOW_MANY_CHILDREN,
         reply_markup=reply_markup,
     )
     return CHILDREN
@@ -358,21 +333,22 @@ async def _show_confirmation(
     end_min = sch._to_min(end_time)
     hours = (end_min - start_min) // 60
 
-    text = (
-        f"📋 Booking Summary\n"
-        f"Date: {d.strftime('%A, %d %B %Y')}\n"
-        f"Time: {start_time} – {end_time} ({hours} hour{'s' if hours > 1 else ''})\n"
-        f"Children: {children}\n"
-        f"Name: {user.first_name}\n\n"
-        f"Confirm?"
+    text = strings.BOOKING_SUMMARY.format(
+        date=strings.fmt_date_long(d),
+        start=start_time,
+        end=end_time,
+        hours=hours,
+        h_label=strings.h_label(hours),
+        children=children,
+        name=user.first_name,
     )
 
     keyboard = [
         [
-            InlineKeyboardButton("✅ Yes", callback_data="confirm_yes"),
-            InlineKeyboardButton("❌ No", callback_data="confirm_no"),
+            InlineKeyboardButton(strings.BTN_YES, callback_data="confirm_yes"),
+            InlineKeyboardButton(strings.BTN_NO, callback_data="confirm_no"),
         ],
-        [InlineKeyboardButton("◀ Back", callback_data="back"), InlineKeyboardButton("❌ Cancel", callback_data="cancel")],
+        [InlineKeyboardButton(strings.BTN_BACK, callback_data="back"), InlineKeyboardButton(strings.BTN_CANCEL, callback_data="cancel")],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -391,7 +367,7 @@ async def confirm_booking(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     if query.data == "confirm_no":
         logger.info("User %d declined booking confirmation", user.id)
-        await query.edit_message_text("Booking cancelled. Use /book to start over.")
+        await query.edit_message_text(strings.BOOKING_CANCELLED_OVER)
         context.user_data.clear()
         return ConversationHandler.END
 
@@ -411,18 +387,14 @@ async def confirm_booking(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     starts = sch.get_available_start_times(schedule, bookings, d, current_time=now_str)
     if start_time not in starts:
         logger.info("User %d booking failed: slot %s on %s no longer available", user.id, start_time, date_str)
-        await query.edit_message_text(
-            "Sorry, this slot is no longer available. Use /book to start again."
-        )
+        await query.edit_message_text(strings.SLOT_UNAVAILABLE)
         context.user_data.clear()
         return ConversationHandler.END
 
     options = sch.get_duration_options(schedule, bookings, d, start_time)
     if (start_time, end_time) not in options:
         logger.info("User %d booking failed: duration %s-%s no longer available", user.id, start_time, end_time)
-        await query.edit_message_text(
-            "Sorry, this duration is no longer available. Use /book to start again."
-        )
+        await query.edit_message_text(strings.DURATION_UNAVAILABLE)
         context.user_data.clear()
         return ConversationHandler.END
 
@@ -436,21 +408,26 @@ async def confirm_booking(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     )
 
     await query.edit_message_text(
-        f"✅ Booking confirmed!\n"
-        f"Date: {d.strftime('%A, %d %B %Y')}\n"
-        f"Time: {start_time} – {end_time}\n"
-        f"Children: {children}\n"
-        f"Booking ID: #{booking_id}\n\n"
-        f"Use /my_bookings to view your bookings or /cancel to cancel it."
+        strings.BOOKING_CONFIRMED_TXT.format(
+            date=strings.fmt_date_long(d),
+            start=start_time,
+            end=end_time,
+            children=children,
+            id=booking_id,
+        )
     )
 
     await notify_sitter(
         context.bot,
-        f"✅ New booking #{booking_id}\n"
-        f"Customer: {user.first_name} (ID: {user.id})\n"
-        f"Date: {d.strftime('%A, %d %B %Y')}\n"
-        f"Time: {start_time} – {end_time}\n"
-        f"Children: {children}",
+        strings.SITTER_NEW_BOOKING.format(
+            id=booking_id,
+            name=user.first_name,
+            uid=user.id,
+            date=strings.fmt_date_long(d),
+            start=start_time,
+            end=end_time,
+            children=children,
+        ),
     )
 
     context.user_data.clear()
@@ -459,7 +436,7 @@ async def confirm_booking(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 async def book_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     logger.info("User %d cancelled booking conversation", update.effective_user.id)
-    await update.message.reply_text("Booking cancelled. Use /book to start a new one.")
+    await update.message.reply_text(strings.BOOKING_CANCELLED_NEW)
     return ConversationHandler.END
 
 
@@ -467,7 +444,7 @@ async def _booking_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     query = update.callback_query
     await query.answer()
     logger.info("User %d cancelled booking via button", update.effective_user.id)
-    await query.edit_message_text("Booking cancelled. Use /book to start over.")
+    await query.edit_message_text(strings.BOOKING_CANCELLED_OVER)
     context.user_data.clear()
     return ConversationHandler.END
 
@@ -478,9 +455,7 @@ async def book_unexpected(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         update.effective_user.id,
         update.message.text,
     )
-    await update.message.reply_text(
-        "Please use the buttons to respond, or type /cancel to exit."
-    )
+    await update.message.reply_text(strings.USE_BUTTONS_BOOK)
     return CONFIRM
 
 
@@ -518,18 +493,18 @@ async def my_bookings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     if not bookings:
         logger.info("User %d (%s) viewed bookings: none", user.id, user.first_name)
-        await update.message.reply_text("You have no upcoming bookings.")
+        await update.message.reply_text(strings.NO_BOOKINGS)
         return
 
     logger.info("User %d (%s) viewed %d booking(s)", user.id, user.first_name, len(bookings))
-    lines = ["Your upcoming bookings:"]
+    lines = [strings.YOUR_BOOKINGS]
     for b in bookings:
         d = date.fromisoformat(b["date"])
         c = b.get("children", 1)
         lines.append(
-            f"  #{b['id']} — {d.strftime('%a, %d %b %Y')} {b['start_time']}–{b['end_time']} ({c} {'child' if c == 1 else 'children'})"
+            f"  #{b['id']} \u2014 {strings.fmt_date_abbr_long(d)} {b['start_time']}\u2013{b['end_time']} ({c} {strings.child_label(c)})"
         )
-    lines.append("\nUse /cancel to cancel a booking.")
+    lines.append(strings.CANCEL_HINT)
     await update.message.reply_text("\n".join(lines))
 
 
@@ -546,7 +521,7 @@ async def cancel_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
     if not bookings:
         logger.info("User %d (%s) ran /cancel: no bookings", user.id, user.first_name)
-        await update.message.reply_text("You have no upcoming bookings to cancel.")
+        await update.message.reply_text(strings.NO_BOOKINGS_CANCEL)
         return ConversationHandler.END
 
     logger.info(
@@ -557,13 +532,13 @@ async def cancel_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     for b in bookings:
         d = date.fromisoformat(b["date"])
         c = b.get("children", 1)
-        label = f"#{b['id']} \u2014 {d.strftime('%a, %d %b')} {b['start_time']}\u2013{b['end_time']} ({c})"
+        label = f"#{b['id']} \u2014 {strings.fmt_date_abbr(d)} {b['start_time']}\u2013{b['end_time']} ({c})"
         keyboard.append([InlineKeyboardButton(label, callback_data=f"cancel_sel_{b['id']}")])
 
-    keyboard.append([InlineKeyboardButton("\u274c Cancel", callback_data="cancel_exit")])
+    keyboard.append([InlineKeyboardButton(strings.BTN_CANCEL_EXIT, callback_data="cancel_exit")])
 
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("Select a booking to cancel:", reply_markup=reply_markup)
+    await update.message.reply_text(strings.SELECT_BOOKING_CANCEL, reply_markup=reply_markup)
     return CANCEL_SELECT
 
 
@@ -575,7 +550,7 @@ async def cancel_select(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     data = query.data
     if data == "cancel_exit":
         logger.info("User %d exited cancel flow", user.id)
-        await query.edit_message_text("Cancellation aborted.")
+        await query.edit_message_text(strings.CANCELLATION_ABORTED)
         context.user_data.clear()
         return ConversationHandler.END
 
@@ -590,23 +565,24 @@ async def cancel_select(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
     booking = next((b for b in bookings if b["id"] == booking_id), None)
     if not booking:
-        await query.edit_message_text("Booking no longer available.")
+        await query.edit_message_text(strings.BOOKING_UNAVAILABLE)
         context.user_data.clear()
         return ConversationHandler.END
 
     d = date.fromisoformat(booking["date"])
     c = booking.get("children", 1)
-    text = (
-        f"Cancel this booking?\n\n"
-        f"#{booking['id']} — {d.strftime('%A, %d %B %Y')}\n"
-        f"{booking['start_time']} – {booking['end_time']}\n"
-        f"{c} {'child' if c == 1 else 'children'}"
+    text = strings.CANCEL_THIS_BOOKING.format(
+        id=booking["id"],
+        date=strings.fmt_date_long(d),
+        start=booking["start_time"],
+        end=booking["end_time"],
+        children=f"{c} {strings.child_label(c)}",
     )
 
     keyboard = [
         [
-            InlineKeyboardButton("\u2705 Yes, cancel", callback_data="cancel_yes"),
-            InlineKeyboardButton("\u25c0 No, go back", callback_data="cancel_no"),
+            InlineKeyboardButton(strings.BTN_YES_CANCEL, callback_data="cancel_yes"),
+            InlineKeyboardButton(strings.BTN_NO_BACK, callback_data="cancel_no"),
         ],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -625,7 +601,7 @@ async def cancel_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return await _show_cancel_list(update, context)
 
     if data == "cancel_exit":
-        await query.edit_message_text("Cancellation aborted.")
+        await query.edit_message_text(strings.CANCELLATION_ABORTED)
         context.user_data.clear()
         return ConversationHandler.END
 
@@ -635,17 +611,15 @@ async def cancel_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     success = db.cancel_booking(booking_id, user.id, sitter_mode=is_sitter)
     if success:
         logger.info("User %d (%s) cancelled booking #%d", user.id, user.first_name, booking_id)
-        await query.edit_message_text(f"\u2705 Booking #{booking_id} has been cancelled.")
+        await query.edit_message_text(strings.BOOKING_CANCELLED_OK.format(id=booking_id))
         if not is_sitter:
             await notify_sitter(
                 context.bot,
-                f"\u274c Booking #{booking_id} cancelled by customer {user.first_name}.",
+                strings.SITTER_CANCEL_NOTE.format(id=booking_id, name=user.first_name),
             )
     else:
         logger.info("User %d failed to cancel booking #%d", user.id, booking_id)
-        await query.edit_message_text(
-            "Could not cancel. It may no longer exist or belong to you."
-        )
+        await query.edit_message_text(strings.CANCEL_FAILED)
 
     context.user_data.clear()
     return ConversationHandler.END
@@ -662,7 +636,7 @@ async def _show_cancel_list(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     if not bookings:
         query = update.callback_query
-        await query.edit_message_text("You have no upcoming bookings to cancel.")
+        await query.edit_message_text(strings.NO_BOOKINGS_CANCEL)
         context.user_data.clear()
         return ConversationHandler.END
 
@@ -670,20 +644,20 @@ async def _show_cancel_list(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     for b in bookings:
         d = date.fromisoformat(b["date"])
         c = b.get("children", 1)
-        label = f"#{b['id']} \u2014 {d.strftime('%a, %d %b')} {b['start_time']}\u2013{b['end_time']} ({c})"
+        label = f"#{b['id']} \u2014 {strings.fmt_date_abbr(d)} {b['start_time']}\u2013{b['end_time']} ({c})"
         keyboard.append([InlineKeyboardButton(label, callback_data=f"cancel_sel_{b['id']}")])
 
-    keyboard.append([InlineKeyboardButton("\u274c Cancel", callback_data="cancel_exit")])
+    keyboard.append([InlineKeyboardButton(strings.BTN_CANCEL_EXIT, callback_data="cancel_exit")])
 
     reply_markup = InlineKeyboardMarkup(keyboard)
     query = update.callback_query
-    await query.edit_message_text("Select a booking to cancel:", reply_markup=reply_markup)
+    await query.edit_message_text(strings.SELECT_BOOKING_CANCEL, reply_markup=reply_markup)
     return CANCEL_SELECT
 
 
 async def cancel_abort(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     logger.info("User %d aborted cancel conversation", update.effective_user.id)
-    await update.message.reply_text("Cancellation aborted.")
+    await update.message.reply_text(strings.CANCELLATION_ABORTED)
     context.user_data.clear()
     return ConversationHandler.END
 
@@ -694,7 +668,7 @@ async def cancel_unexpected(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         update.effective_user.id,
         update.message.text,
     )
-    await update.message.reply_text("Please use the buttons above, or type /cancel to exit.")
+    await update.message.reply_text(strings.USE_BUTTONS_CANCEL)
     return CANCEL_SELECT
 
 
@@ -721,11 +695,11 @@ async def available(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     schedule = db.get_schedule()
     if not schedule:
-        await update.message.reply_text("No schedule has been configured yet.")
+        await update.message.reply_text(strings.NO_SCHEDULE_AVAIL)
         return
 
     today = date.today()
-    lines = ["Available slots in the next 14 days:"]
+    lines = [strings.AVAILABLE_HEADER]
 
     for i in range(14):
         d = today + timedelta(days=i)
@@ -737,14 +711,14 @@ async def available(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         starts = sch.get_available_start_times(schedule, bookings, d, current_time=now_str)
         if not starts:
             continue
-        lines.append(f"\n{d.strftime('%a %d %b')}:")
+        lines.append(f"\n{strings.fmt_date_abbr_day(d)}:")
         for t in starts:
             lines.append(f"  \u2022 {t}")
 
     logger.info("User %d checked availability: %d days with slots", user.id, len(lines) - 1)
 
     if len(lines) == 1:
-        await update.message.reply_text("No available slots in the next 14 days.")
+        await update.message.reply_text(strings.NO_AVAILABLE_SLOTS)
         return
 
     await update.message.reply_text("\n".join(lines))
@@ -754,11 +728,9 @@ async def available(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 SCHEDULE_DAYS, SCHEDULE_DAY_ACTION, SCHEDULE_START_TIME, SCHEDULE_END_TIME, SCHEDULE_CONFIRM = range(5)
 
-DAY_ABBRS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-
 
 def _day_label(day_idx: int, windows: list[tuple[str, str]]) -> str:
-    abbr = DAY_ABBRS[day_idx]
+    abbr = strings.DAY_ABBRS_IT[day_idx]
     if not windows:
         return f"{abbr}: \u2014"
     s, e = windows[0]
@@ -771,7 +743,7 @@ def _day_label(day_idx: int, windows: list[tuple[str, str]]) -> str:
 async def set_schedule_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not _is_sitter(update):
         logger.info("Non-sitter user %d tried /set_schedule", update.effective_user.id)
-        await update.message.reply_text("This command is only for the sitter.")
+        await update.message.reply_text(strings.SITTER_ONLY)
         return ConversationHandler.END
 
     logger.info("Sitter started interactive schedule edit")
@@ -791,10 +763,10 @@ async def set_schedule_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
             row = []
     if row:
         keyboard.append(row)
-    keyboard.append([InlineKeyboardButton("\u2705 Done", callback_data="sched_done")])
+    keyboard.append([InlineKeyboardButton(strings.BTN_DONE, callback_data="sched_done")])
 
     await update.message.reply_text(
-        "Tap a day to configure its time windows, then tap Done:",
+        strings.TAP_DAY,
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
     return SCHEDULE_DAYS
@@ -818,17 +790,17 @@ async def _show_day_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     draft = context.user_data["schedule_draft"]
     windows = draft.get(day_idx, [])
 
-    lines = [f"<b>{sch.DISPLAY_NAMES[day_idx]}</b>"]
+    lines = [f"<b>{strings.DISPLAY_NAMES_IT[day_idx]}</b>"]
     if windows:
         for s, e in windows:
             lines.append(f"  {s} \u2013 {e}")
     else:
-        lines.append("  No windows configured")
+        lines.append(strings.NO_WINDOWS_CFG)
 
-    keyboard = [[InlineKeyboardButton("\u2795 Add window", callback_data="sched_add")]]
+    keyboard = [[InlineKeyboardButton(strings.BTN_ADD_WINDOW, callback_data="sched_add")]]
     if windows:
-        keyboard.append([InlineKeyboardButton("\U0001f5d1 Clear day", callback_data="sched_clear")])
-    keyboard.append([InlineKeyboardButton("\U0001f519 Back to days", callback_data="sched_back_days")])
+        keyboard.append([InlineKeyboardButton(strings.BTN_CLEAR_DAY, callback_data="sched_clear")])
+    keyboard.append([InlineKeyboardButton(strings.BTN_BACK_DAYS, callback_data="sched_back_days")])
 
     await update.callback_query.edit_message_text(
         "\n".join(lines), reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML"
@@ -867,10 +839,10 @@ async def _show_schedule_day_selector(update: Update, context: ContextTypes.DEFA
             row = []
     if row:
         keyboard.append(row)
-    keyboard.append([InlineKeyboardButton("\u2705 Done", callback_data="sched_done")])
+    keyboard.append([InlineKeyboardButton(strings.BTN_DONE, callback_data="sched_done")])
 
     await update.callback_query.edit_message_text(
-        "Tap a day to configure its time windows, then tap Done:",
+        strings.TAP_DAY,
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
     return SCHEDULE_DAYS
@@ -886,10 +858,10 @@ async def _show_start_time_picker(update: Update, context: ContextTypes.DEFAULT_
             row = []
     if row:
         keyboard.append(row)
-    keyboard.append([InlineKeyboardButton("\U0001f519 Back", callback_data="sched_back_action")])
+    keyboard.append([InlineKeyboardButton(strings.BTN_BACK, callback_data="sched_back_action")])
 
     await update.callback_query.edit_message_text(
-        "Select start time:", reply_markup=InlineKeyboardMarkup(keyboard),
+        strings.SELECT_START, reply_markup=InlineKeyboardMarkup(keyboard),
     )
     return SCHEDULE_START_TIME
 
@@ -918,10 +890,10 @@ async def _show_end_time_picker(update: Update, context: ContextTypes.DEFAULT_TY
             row = []
     if row:
         keyboard.append(row)
-    keyboard.append([InlineKeyboardButton("\U0001f519 Back", callback_data="sched_back_start")])
+    keyboard.append([InlineKeyboardButton(strings.BTN_BACK, callback_data="sched_back_start")])
 
     await update.callback_query.edit_message_text(
-        f"Start: {start_hour:02d}:00\nSelect end time:",
+        strings.SELECT_END.format(start=f"{start_hour:02d}:00"),
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
     return SCHEDULE_END_TIME
@@ -947,23 +919,23 @@ async def schedule_end_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def _show_schedule_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     draft = context.user_data["schedule_draft"]
-    lines = ["<b>Schedule preview:</b>"]
+    lines = [f"<b>{strings.SCHEDULE_PREVIEW}</b>"]
     for day_idx in range(7):
         windows = draft.get(day_idx, [])
         if windows:
             times = ", ".join(f"{s}\u2013{e}" for s, e in windows)
-            lines.append(f"{sch.DISPLAY_NAMES[day_idx]}: {times}")
+            lines.append(f"{strings.DISPLAY_NAMES_IT[day_idx]}: {times}")
         else:
-            lines.append(f"{sch.DISPLAY_NAMES[day_idx]}: OFF")
+            lines.append(f"{strings.DISPLAY_NAMES_IT[day_idx]}: {strings.DAY_OFF_LABEL}")
     lines.append("")
-    lines.append("Save this schedule?")
+    lines.append(strings.SAVE_SCHEDULE)
 
     keyboard = [
         [
-            InlineKeyboardButton("\u2705 Yes", callback_data="sched_save_yes"),
-            InlineKeyboardButton("\u274c No", callback_data="sched_save_no"),
+            InlineKeyboardButton(strings.BTN_YES, callback_data="sched_save_yes"),
+            InlineKeyboardButton(strings.BTN_NO, callback_data="sched_save_no"),
         ],
-        [InlineKeyboardButton("\U0001f519 Back", callback_data="sched_back_days")],
+        [InlineKeyboardButton(strings.BTN_BACK_DAYS, callback_data="sched_back_days")],
     ]
 
     await update.callback_query.edit_message_text(
@@ -982,7 +954,7 @@ async def schedule_confirm_chosen(update: Update, context: ContextTypes.DEFAULT_
 
     if data == "sched_save_no":
         logger.info("Sitter declined schedule save")
-        await query.edit_message_text("Schedule unchanged. Use /set_schedule to start over.")
+        await query.edit_message_text(strings.SCHEDULE_UNCHANGED)
         context.user_data.clear()
         return ConversationHandler.END
 
@@ -993,7 +965,7 @@ async def schedule_confirm_chosen(update: Update, context: ContextTypes.DEFAULT_
             slots.append((day_idx, s, e))
 
     if not slots:
-        await query.edit_message_text("No time windows configured. Schedule unchanged.")
+        await query.edit_message_text(strings.NO_WINDOWS_SAVE)
         context.user_data.clear()
         return ConversationHandler.END
 
@@ -1001,7 +973,7 @@ async def schedule_confirm_chosen(update: Update, context: ContextTypes.DEFAULT_
     logger.info("Sitter updated schedule with %d window(s)", len(slots))
     new_schedule = db.get_schedule()
     await query.edit_message_text(
-        "\u2705 Schedule updated!\n\n" + sch.format_schedule(new_schedule)
+        strings.SCHEDULE_UPDATED.format(schedule=sch.format_schedule(new_schedule))
     )
     context.user_data.clear()
     return ConversationHandler.END
@@ -1009,7 +981,7 @@ async def schedule_confirm_chosen(update: Update, context: ContextTypes.DEFAULT_
 
 async def set_schedule_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     logger.info("Sitter cancelled schedule edit")
-    await update.message.reply_text("Schedule unchanged.")
+    await update.message.reply_text(strings.SCHEDULE_CANCELLED)
     context.user_data.clear()
     return ConversationHandler.END
 
@@ -1019,9 +991,7 @@ async def set_schedule_unexpected(update: Update, context: ContextTypes.DEFAULT_
         "Sitter sent unexpected input during schedule edit: %s",
         update.message.text,
     )
-    await update.message.reply_text(
-        "Please use the buttons above, or type /cancel to exit."
-    )
+    await update.message.reply_text(strings.USE_BUTTONS_SCHEDULE)
     return SCHEDULE_DAYS
 
 
@@ -1056,24 +1026,24 @@ set_schedule_conv = ConversationHandler(
 async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _is_sitter(update):
         logger.info("Non-sitter user %d tried /admin", update.effective_user.id)
-        await update.message.reply_text("This command is only for the sitter.")
+        await update.message.reply_text(strings.ADMIN_SITTER_ONLY)
         return
 
     bookings = db.get_all_bookings()
     if not bookings:
         logger.info("Sitter viewed admin: no upcoming bookings")
-        await update.message.reply_text("No upcoming bookings.")
+        await update.message.reply_text(strings.ADMIN_NO_BOOKINGS)
         return
 
     logger.info("Sitter viewed admin: %d upcoming booking(s)", len(bookings))
-    lines = ["📋 All upcoming confirmed bookings:"]
+    lines = [strings.ADMIN_HEADER]
     for b in bookings:
         d = date.fromisoformat(b["date"])
         c = b.get("children", 1)
         lines.append(
-            f"  #{b['id']} — {d.strftime('%a, %d %b %Y')} "
-            f"{b['start_time']}–{b['end_time']} | "
-            f"{c} {'child' if c == 1 else 'children'} | "
+            f"  #{b['id']} \u2014 {strings.fmt_date_abbr_long(d)} "
+            f"{b['start_time']}\u2013{b['end_time']} | "
+            f"{c} {strings.child_label(c)} | "
             f"{b['user_name']} (ID: {b['user_id']})"
         )
     await update.message.reply_text("\n".join(lines))

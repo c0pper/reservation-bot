@@ -1,6 +1,8 @@
 from datetime import date
 from typing import Optional
 
+import strings
+
 DAY_NAMES = {
     "monday": 0, "mon": 0,
     "tuesday": 1, "tue": 1, "tues": 1,
@@ -10,11 +12,6 @@ DAY_NAMES = {
     "saturday": 5, "sat": 5,
     "sunday": 6, "sun": 6,
 }
-
-DISPLAY_NAMES = [
-    "Monday", "Tuesday", "Wednesday",
-    "Thursday", "Friday", "Saturday", "Sunday",
-]
 
 
 def parse_day(name: str) -> int | None:
@@ -144,7 +141,7 @@ def get_duration_options(
 
 def format_schedule(schedule: list[dict]) -> str:
     if not schedule:
-        return "No schedule configured."
+        return strings.NO_SCHEDULE_CONFIGURED
     by_day: dict[int, list[tuple[str, str]]] = {}
     for s in schedule:
         by_day.setdefault(s["day_of_week"], []).append((s["start_time"], s["end_time"]))
@@ -152,7 +149,7 @@ def format_schedule(schedule: list[dict]) -> str:
     for day_idx in range(7):
         if day_idx in by_day:
             times = ", ".join(f"{s}-{e}" for s, e in by_day[day_idx])
-            lines.append(f"{DISPLAY_NAMES[day_idx]}: {times}")
+            lines.append(f"{strings.DISPLAY_NAMES_IT[day_idx]}: {times}")
         else:
-            lines.append(f"{DISPLAY_NAMES[day_idx]}: OFF")
+            lines.append(f"{strings.DISPLAY_NAMES_IT[day_idx]}: {strings.DAY_OFF_LABEL}")
     return "\n".join(lines)
