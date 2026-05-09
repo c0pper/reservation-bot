@@ -14,3 +14,6 @@ wheels/
 data/
 .env
 stack.env
+
+# Log files
+.logs/

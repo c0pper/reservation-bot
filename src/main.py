@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+from logging.handlers import RotatingFileHandler
 
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
@@ -24,6 +25,15 @@ def main() -> None:
         level=os.environ.get("LOG_LEVEL", "INFO").upper(),
     )
     logging.getLogger("httpx").setLevel(logging.WARNING)
+
+    os.makedirs(".logs", exist_ok=True)
+    file_handler = RotatingFileHandler(
+        ".logs/bot.log", maxBytes=5_242_880, backupCount=3
+    )
+    file_handler.setFormatter(
+        logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+    )
+    logging.getLogger().addHandler(file_handler)
 
     if not BOT_TOKEN:
         msg = "BOT_TOKEN environment variable is not set"
