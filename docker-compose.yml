@@ -3,5 +3,5 @@ services:
     build: .
     env_file: stack.env
     volumes:
-      - ~/docker/reservation-bot/data:/app/data
+      - /home/simo/docker/reservation-bot/data:/app/data
     restart: unless-stopped
