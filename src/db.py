@@ -128,6 +128,19 @@ def cancel_booking(booking_id: int, user_id: int, sitter_mode: bool = False) -> 
     return affected > 0
 
 
+def cancel_user_bookings(user_id: int) -> int:
+    conn = get_conn()
+    cur = conn.execute(
+        "UPDATE bookings SET status = 'cancelled', cancelled_at = datetime('now') WHERE user_id = ? AND status = 'confirmed'",
+        (user_id,),
+    )
+    conn.commit()
+    affected = cur.rowcount
+    conn.close()
+    logger.info("Cancelled %d bookings for user=%d", affected, user_id)
+    return affected
+
+
 def get_user_bookings(user_id: int, status: str = "confirmed") -> list[dict]:
     conn = get_conn()
     rows = conn.execute(

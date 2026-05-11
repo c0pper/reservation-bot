@@ -778,6 +778,7 @@ async def cancel_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         label = f"#{b['id']} \u2014 {strings.fmt_date_abbr(d)} {b['start_time']}\u2013{b['end_time']} ({c})"
         keyboard.append([InlineKeyboardButton(label, callback_data=f"cancel_sel_{b['id']}")])
 
+    keyboard.append([InlineKeyboardButton(strings.BTN_CANCEL_ALL, callback_data="cancel_all")])
     keyboard.append([InlineKeyboardButton(strings.BTN_CANCEL_EXIT, callback_data="cancel_exit")])
 
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -796,6 +797,20 @@ async def cancel_select(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         await query.edit_message_text(strings.CANCELLATION_ABORTED)
         context.user_data.clear()
         return ConversationHandler.END
+
+    if data == "cancel_all":
+        logger.info("User %d selected cancel all", user.id)
+        context.user_data["cancel_all"] = True
+
+        keyboard = [
+            [
+                InlineKeyboardButton(strings.BTN_YES_CANCEL, callback_data="cancel_all_yes"),
+                InlineKeyboardButton(strings.BTN_NO_BACK, callback_data="cancel_all_no"),
+            ],
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(strings.CANCEL_ALL_PROMPT, reply_markup=reply_markup)
+        return CANCEL_CONFIRM
 
     booking_id = int(data.split("_")[-1])
     context.user_data["cancel_booking_id"] = booking_id
@@ -839,6 +854,24 @@ async def cancel_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     user = update.effective_user
 
     data = query.data
+
+    if context.user_data.get("cancel_all"):
+        if data == "cancel_all_no":
+            logger.info("User %d went back from cancel all confirmation", user.id)
+            return await _show_cancel_list(update, context)
+
+        if data == "cancel_all_yes":
+            count = db.cancel_user_bookings(user.id)
+            logger.info("User %d cancelled all %d bookings", user.id, count)
+            await query.edit_message_text(strings.BOOKINGS_ALL_CANCELLED.format(count=count))
+            if count > 0:
+                await notify_sitter(
+                    context.bot,
+                    strings.SITTER_CANCEL_ALL_NOTE.format(name=user.first_name, count=count),
+                )
+            context.user_data.clear()
+            return ConversationHandler.END
+
     if data == "cancel_no":
         logger.info("User %d went back from cancel confirmation", user.id)
         return await _show_cancel_list(update, context)
@@ -890,6 +923,7 @@ async def _show_cancel_list(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         label = f"#{b['id']} \u2014 {strings.fmt_date_abbr(d)} {b['start_time']}\u2013{b['end_time']} ({c})"
         keyboard.append([InlineKeyboardButton(label, callback_data=f"cancel_sel_{b['id']}")])
 
+    keyboard.append([InlineKeyboardButton(strings.BTN_CANCEL_ALL, callback_data="cancel_all")])
     keyboard.append([InlineKeyboardButton(strings.BTN_CANCEL_EXIT, callback_data="cancel_exit")])
 
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -919,10 +953,10 @@ cancel_conv = ConversationHandler(
     entry_points=[CommandHandler("cancel", cancel_start)],
     states={
         CANCEL_SELECT: [
-            CallbackQueryHandler(cancel_select, pattern="^cancel_sel_|^cancel_exit$"),
+            CallbackQueryHandler(cancel_select, pattern="^cancel_sel_|^cancel_exit$|^cancel_all$"),
         ],
         CANCEL_CONFIRM: [
-            CallbackQueryHandler(cancel_confirm, pattern="^cancel_yes$|^cancel_no$|^cancel_exit$"),
+            CallbackQueryHandler(cancel_confirm, pattern="^cancel_yes$|^cancel_no$|^cancel_exit$|^cancel_all_yes$|^cancel_all_no$"),
         ],
     },
     fallbacks=[

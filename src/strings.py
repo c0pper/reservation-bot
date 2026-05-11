@@ -160,6 +160,9 @@ BOOKING_CANCELLED_OK = "✅ Prenotazione #{id} annullata."
 SITTER_CANCEL_NOTE = "❌ Prenotazione #{id} annullata dal cliente {name}."
 CANCEL_FAILED = "Impossibile annullare. Potrebbe non esistere più."
 USE_BUTTONS_CANCEL = "Usa i pulsanti qui sopra, o digita /cancel per uscire."
+CANCEL_ALL_PROMPT = "Annullare tutte le prenotazioni?"
+BOOKINGS_ALL_CANCELLED = "✅ {count} prenotazione(i) annullata(e)."
+SITTER_CANCEL_ALL_NOTE = "❌ {name} ha annullato {count} prenotazione(i)."
 
 
 # ── /available ─────────────────────────────────────────────────
@@ -216,3 +219,4 @@ BTN_ADD_WINDOW = "\u2795 Aggiungi fascia"
 BTN_CLEAR_DAY = "\U0001f5d1 Cancella giorno"
 BTN_BACK_DAYS = "\u25c0 Giorni"
 BTN_CANCEL_EXIT = "\u274c Annulla"
+BTN_CANCEL_ALL = "\U0001f5d1 Annulla tutte"
