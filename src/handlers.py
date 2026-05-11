@@ -4,7 +4,7 @@ from datetime import date, datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove, Update
 from telegram.ext import (
     CallbackQueryHandler,
     CommandHandler,
@@ -19,7 +19,7 @@ import strings
 import scheduler as sch
 from notifier import SITTER_USER_IDS, notify_sitter
 
-DATE, START_TIME, DURATION, CHILDREN, CONFIRM = range(5)
+DATE, LOCATION, START_TIME, DURATION, CHILDREN, CONFIRM = range(6)
 CANCEL_SELECT, CANCEL_CONFIRM = range(2)
 
 
@@ -137,6 +137,85 @@ async def _show_date_picker(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     return DATE
 
 
+def _build_date_keyboard(schedule: list[dict]) -> list[list[InlineKeyboardButton]]:
+    keyboard = []
+    row = []
+    today = date.today()
+
+    for i in range(14):
+        d = today + timedelta(days=i)
+        weekday = d.weekday()
+        if not any(s["day_of_week"] == weekday for s in schedule):
+            continue
+        bookings = db.get_bookings_for_date(d.isoformat())
+        now_str = datetime.now().strftime("%H:%M") if d == today else None
+        starts = sch.get_available_start_times(schedule, bookings, d, current_time=now_str)
+        if not starts:
+            continue
+        label = strings.fmt_date_short(d)
+        row.append(
+            InlineKeyboardButton(label, callback_data=f"date_{d.isoformat()}")
+        )
+
+        if len(row) == 4:
+            keyboard.append(row)
+            row = []
+
+    if row:
+        keyboard.append(row)
+    return keyboard
+
+
+async def _show_date_picker_as_new_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    schedule = db.get_schedule()
+    keyboard = _build_date_keyboard(schedule)
+
+    if not keyboard:
+        await update.message.reply_text(strings.NO_SLOTS_14)
+        context.user_data.clear()
+        return ConversationHandler.END
+
+    keyboard.append([InlineKeyboardButton(strings.BTN_CANCEL, callback_data="cancel")])
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    if update.callback_query:
+        await update.callback_query.edit_message_text(strings.SELECT_DATE, reply_markup=reply_markup)
+    else:
+        await update.message.reply_text(strings.SELECT_DATE, reply_markup=reply_markup)
+    return DATE
+
+
+async def _show_location_picker(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    keyboard = [
+        [KeyboardButton("📍 Invia posizione", request_location=True)],
+        [KeyboardButton("Indietro")],
+    ]
+    reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True)
+    if update.callback_query:
+        query = update.callback_query
+        await query.edit_message_reply_markup(None)
+        await query.message.reply_text(strings.SELECT_LOCATION, reply_markup=reply_markup)
+    else:
+        await update.message.reply_text(strings.SELECT_LOCATION, reply_markup=reply_markup)
+    return LOCATION
+
+
+async def location_back(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    logger.info("User %d went back from location picker", update.effective_user.id)
+    await update.message.reply_text("\u274c", reply_markup=ReplyKeyboardRemove())
+    return await _show_date_picker_as_new_message(update, context)
+
+
+async def location_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user = update.effective_user
+    location = update.message.location
+    logger.info("User %d sent location: %f, %f", user.id, location.latitude, location.longitude)
+    context.user_data["booking_lat"] = location.latitude
+    context.user_data["booking_lon"] = location.longitude
+    await update.message.reply_text(strings.CONFIRM_LOCATION, reply_markup=ReplyKeyboardRemove())
+    date_str = context.user_data["booking_date"]
+    return await _show_time_picker(update, context, date_str)
+
+
 async def date_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
@@ -155,7 +234,7 @@ async def date_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     date_str = data.split("_", 1)[1]
     logger.info("User %d selected date %s", user.id, date_str)
     context.user_data["booking_date"] = date_str
-    return await _show_time_picker(update, context, date_str)
+    return await _show_location_picker(update, context)
 
 
 async def _show_time_picker(
@@ -173,11 +252,11 @@ async def _show_time_picker(
     if not starts:
         keyboard = [[InlineKeyboardButton(strings.BTN_BACK, callback_data="back")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        query = update.callback_query
-        await query.edit_message_text(
-            strings.NO_SLOTS_DATE.format(date=strings.fmt_date_weekday_long(d)),
-            reply_markup=reply_markup,
-        )
+        text = strings.NO_SLOTS_DATE.format(date=strings.fmt_date_weekday_long(d))
+        if update.callback_query:
+            await update.callback_query.edit_message_text(text, reply_markup=reply_markup)
+        else:
+            await update.message.reply_text(text, reply_markup=reply_markup)
         return DATE
 
     keyboard = []
@@ -192,11 +271,11 @@ async def _show_time_picker(
     keyboard.append([InlineKeyboardButton(strings.BTN_BACK, callback_data="back"), InlineKeyboardButton(strings.BTN_CANCEL, callback_data="cancel")])
 
     reply_markup = InlineKeyboardMarkup(keyboard)
-    query = update.callback_query
-    await query.edit_message_text(
-        strings.AVAILABLE_TIMES.format(date=strings.fmt_date_weekday_long(d)),
-        reply_markup=reply_markup,
-    )
+    text = strings.AVAILABLE_TIMES.format(date=strings.fmt_date_weekday_long(d))
+    if update.callback_query:
+        await update.callback_query.edit_message_text(text, reply_markup=reply_markup)
+    else:
+        await update.message.reply_text(text, reply_markup=reply_markup)
     return START_TIME
 
 
@@ -210,7 +289,7 @@ async def time_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
         return await _booking_cancel(update, context)
     if data == "back":
         logger.info("User %d went back from time picker", user.id)
-        return await _show_date_picker(update, context)
+        return await _show_location_picker(update, context)
 
     start_time = data.split("_", 1)[1]
     logger.info("User %d selected start time %s", user.id, start_time)
@@ -399,8 +478,10 @@ async def confirm_booking(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return ConversationHandler.END
 
     children = context.user_data.get("booking_children", 1)
+    lat = context.user_data.get("booking_lat")
+    lon = context.user_data.get("booking_lon")
     booking_id = db.add_booking(
-        user.id, user.first_name, date_str, start_time, end_time, children
+        user.id, user.first_name, date_str, start_time, end_time, children, lat, lon
     )
     logger.info(
         "User %d (%s) confirmed booking #%d: %s %s-%s",
@@ -416,6 +497,8 @@ async def confirm_booking(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             id=booking_id,
         )
     )
+    if lat and lon:
+        await context.bot.send_location(chat_id=user.id, latitude=lat, longitude=lon)
 
     await notify_sitter(
         context.bot,
@@ -428,6 +511,8 @@ async def confirm_booking(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             end=end_time,
             children=children,
         ),
+        latitude=lat,
+        longitude=lon,
     )
 
     context.user_data.clear()
@@ -464,6 +549,10 @@ book_conv = ConversationHandler(
     states={
         DATE: [
             CallbackQueryHandler(date_chosen, pattern="^(date_|noop|back|cancel)"),
+        ],
+        LOCATION: [
+            MessageHandler(filters.LOCATION, location_received),
+            MessageHandler(filters.TEXT & ~filters.COMMAND, location_back),
         ],
         START_TIME: [
             CallbackQueryHandler(time_chosen, pattern="^(time_|back|cancel)"),
@@ -1040,10 +1129,12 @@ async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     for b in bookings:
         d = date.fromisoformat(b["date"])
         c = b.get("children", 1)
+        loc = "📍" if b.get("latitude") and b.get("longitude") else "📍 \u2014"
         lines.append(
             f"  #{b['id']} \u2014 {strings.fmt_date_abbr_long(d)} "
             f"{b['start_time']}\u2013{b['end_time']} | "
             f"{c} {strings.child_label(c)} | "
+            f"{loc} | "
             f"{b['user_name']} (ID: {b['user_id']})"
         )
     await update.message.reply_text("\n".join(lines))

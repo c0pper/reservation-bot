@@ -18,11 +18,13 @@ SITTER_NAMES = {
 }
 
 
-async def notify_sitter(bot: Bot, message: str) -> None:
+async def notify_sitter(bot: Bot, message: str, latitude: float | None = None, longitude: float | None = None) -> None:
     for sitter_id in SITTER_USER_IDS:
         name = SITTER_NAMES.get(sitter_id, sitter_id)
         personal_msg = f"Ciao {name},\n\n{message}"
         try:
+            if latitude and longitude:
+                await bot.send_location(chat_id=sitter_id, latitude=latitude, longitude=longitude)
             await bot.send_message(chat_id=sitter_id, text=personal_msg)
             logger.debug("Sitter %s (%s) notified: %s", name, sitter_id, message.split("\n")[0])
         except Forbidden:

@@ -88,6 +88,8 @@ def fmt_start(name: str) -> str:
 
 NO_SCHEDULE = "Nessun orario configurato. Riprova più tardi."
 NO_SLOTS_14 = "Nessuno slot disponibile nei prossimi 14 giorni. Riprova più tardi."
+SELECT_LOCATION = "📍 Invia la tua posizione per indicare l'indirizzo:"
+CONFIRM_LOCATION = "📍 Posizione confermata!"
 SELECT_DATE = "Seleziona una data (solo slot disponibili):"
 NO_AVAILABILITY_DAY = "Nessuna disponibilità in questo giorno."
 NO_SLOTS_DATE = "Nessuno slot disponibile il {date}. Scegli un'altra data."
@@ -101,6 +103,7 @@ BOOKING_SUMMARY = (
     "Data: {date}\n"
     "Orario: {start} \u2013 {end} ({hours} {h_label})\n"
     "Bambini: {children}\n"
+    "📍 Posizione registrata\n"
     "Nome: {name}\n\n"
     "Confermi?"
 )
