@@ -297,6 +297,7 @@ async def _filter_starts_by_transit(
     if not confirmed:
         return starts
 
+    transit_cache: dict[tuple[float, float], float] = {}
     result = []
 
     def find_prev(start_min: int) -> dict | None:
@@ -313,10 +314,14 @@ async def _filter_starts_by_transit(
             result.append(t)
             continue
 
-        travel_time = await geocoder.get_transit_time(
-            prev["latitude"], prev["longitude"], dest_lat, dest_lon, mode="bus"
-        )
+        key = (prev["latitude"], prev["longitude"])
+        if key not in transit_cache:
+            travel_seconds = await geocoder.get_transit_time(
+                prev["latitude"], prev["longitude"], dest_lat, dest_lon, mode="drive"
+            )
+            transit_cache[key] = travel_seconds
 
+        travel_time = transit_cache[key]
         if travel_time is None:
             result.append(t)
             continue
@@ -327,6 +332,40 @@ async def _filter_starts_by_transit(
             result.append(t)
 
     return result
+
+
+async def _filter_durations_by_transit(
+    options: list[tuple[str, str]],
+    bookings: list[dict],
+    start_time: str,
+    current_lat: float,
+    current_lon: float,
+) -> list[tuple[str, str]]:
+    start_min = sch._to_min(start_time)
+    confirmed = [
+        b for b in bookings
+        if b.get("latitude") is not None and b["status"] == "confirmed" and sch._to_min(b["start_time"]) > start_min
+    ]
+    if not confirmed:
+        return options
+
+    next_b = min(confirmed, key=lambda b: sch._to_min(b["start_time"]))
+    travel_seconds = await geocoder.get_transit_time(
+        current_lat, current_lon, next_b["latitude"], next_b["longitude"], mode="drive"
+    )
+    if travel_seconds is None:
+        return options
+
+    travel_min = travel_seconds / 60
+    next_start_min = sch._to_min(next_b["start_time"])
+    max_allowed_end = next_start_min - travel_min
+
+    filtered = []
+    for s, e in options:
+        if sch._to_min(e) <= max_allowed_end:
+            filtered.append((s, e))
+
+    return filtered
 
 
 async def _show_time_picker(
@@ -409,7 +448,15 @@ async def _show_duration_picker(
     bookings = db.get_bookings_for_date(date_str)
 
     options = sch.get_duration_options(schedule, bookings, d, start_time)
-    logger.info("User %d: duration picker for %s at %s (%d options)", user.id, date_str, start_time, len(options))
+
+    current_lat = context.user_data.get("booking_lat")
+    current_lon = context.user_data.get("booking_lon")
+    logger.info(f"User {user.id}: filtering durations by transit for {date_str} at {start_time} (dest: {current_lat}, {current_lon}) ({len(options)} options before filtering)")
+    if current_lat is not None and current_lon is not None:
+        options = await _filter_durations_by_transit(options, bookings, start_time, current_lat, current_lon)
+        logger.info(f"User {user.id}: filtered durations by transit for {date_str} at {start_time}: {len(options)}")
+
+    logger.info(f"User {user.id}: duration picker for {date_str} at {start_time}: {len(options)}")
 
     if not options:
         keyboard = [[InlineKeyboardButton(strings.BTN_BACK, callback_data="back")]]
