@@ -88,7 +88,7 @@ def fmt_start(name: str) -> str:
 
 NO_SCHEDULE = "Nessun orario configurato. Riprova più tardi."
 NO_SLOTS_14 = "Nessuno slot disponibile nei prossimi 14 giorni. Riprova più tardi."
-SELECT_LOCATION = "📍 Invia la tua posizione per indicare l'indirizzo:"
+SELECT_LOCATION = "📍 Tocca l\u2019icona 📎 (allegati) accanto al messaggio, scegli Posizione, cerca o tocca un punto sulla mappa, poi invia."
 CONFIRM_LOCATION = "📍 Posizione confermata: {address}"
 SELECT_DATE = "Seleziona una data (solo slot disponibili):"
 NO_AVAILABILITY_DAY = "Nessuna disponibilità in questo giorno."

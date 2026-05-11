@@ -187,7 +187,6 @@ async def _show_date_picker_as_new_message(update: Update, context: ContextTypes
 
 async def _show_location_picker(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     keyboard = [
-        [KeyboardButton("📍 Invia posizione", request_location=True)],
         [KeyboardButton("Indietro")],
     ]
     reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True)
