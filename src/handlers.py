@@ -17,6 +17,7 @@ from telegram.ext import (
 import db
 import strings
 import scheduler as sch
+import geocoder
 from notifier import SITTER_USER_IDS, notify_sitter
 
 DATE, LOCATION, START_TIME, DURATION, CHILDREN, CONFIRM = range(6)
@@ -211,7 +212,16 @@ async def location_received(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     logger.info("User %d sent location: %f, %f", user.id, location.latitude, location.longitude)
     context.user_data["booking_lat"] = location.latitude
     context.user_data["booking_lon"] = location.longitude
-    await update.message.reply_text(strings.CONFIRM_LOCATION, reply_markup=ReplyKeyboardRemove())
+
+    address = await geocoder.reverse_geocode(location.latitude, location.longitude)
+    context.user_data["booking_address"] = address
+    logger.info("User %d geocoded address: %s", user.id, address)
+
+    address_str = address if address else "—"
+    await update.message.reply_text(
+        strings.CONFIRM_LOCATION.format(address=address_str),
+        reply_markup=ReplyKeyboardRemove(),
+    )
     date_str = context.user_data["booking_date"]
     return await _show_time_picker(update, context, date_str)
 
@@ -405,6 +415,7 @@ async def _show_confirmation(
     start_time = context.user_data["booking_start"]
     end_time = context.user_data["booking_end"]
     children = context.user_data.get("booking_children", 1)
+    address = context.user_data.get("booking_address", "—")
     logger.info("User %d: showing confirmation for %s %s-%s (%d children)", user.id, date_str, start_time, end_time, children)
 
     d = date.fromisoformat(date_str)
@@ -420,6 +431,7 @@ async def _show_confirmation(
         h_label=strings.h_label(hours),
         children=children,
         name=user.first_name,
+        address=address,
     )
 
     keyboard = [
@@ -480,8 +492,9 @@ async def confirm_booking(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     children = context.user_data.get("booking_children", 1)
     lat = context.user_data.get("booking_lat")
     lon = context.user_data.get("booking_lon")
+    address = context.user_data.get("booking_address")
     booking_id = db.add_booking(
-        user.id, user.first_name, date_str, start_time, end_time, children, lat, lon
+        user.id, user.first_name, date_str, start_time, end_time, children, lat, lon, address
     )
     logger.info(
         "User %d (%s) confirmed booking #%d: %s %s-%s",
@@ -495,6 +508,7 @@ async def confirm_booking(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             end=end_time,
             children=children,
             id=booking_id,
+            address=address or "—",
         )
     )
     if lat and lon:
@@ -510,6 +524,7 @@ async def confirm_booking(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             start=start_time,
             end=end_time,
             children=children,
+            address=address or "—",
         ),
         latitude=lat,
         longitude=lon,
@@ -590,8 +605,9 @@ async def my_bookings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     for b in bookings:
         d = date.fromisoformat(b["date"])
         c = b.get("children", 1)
+        addr = b.get("address") or "—"
         lines.append(
-            f"  #{b['id']} \u2014 {strings.fmt_date_abbr_long(d)} {b['start_time']}\u2013{b['end_time']} ({c} {strings.child_label(c)})"
+            f"  #{b['id']} \u2014 {strings.fmt_date_abbr_long(d)} {b['start_time']}\u2013{b['end_time']} ({c} {strings.child_label(c)}) \u2014 📍 {addr}"
         )
     lines.append(strings.CANCEL_HINT)
     await update.message.reply_text("\n".join(lines))
@@ -1129,12 +1145,12 @@ async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     for b in bookings:
         d = date.fromisoformat(b["date"])
         c = b.get("children", 1)
-        loc = "📍" if b.get("latitude") and b.get("longitude") else "📍 \u2014"
+        addr = b.get("address") or "—"
         lines.append(
             f"  #{b['id']} \u2014 {strings.fmt_date_abbr_long(d)} "
             f"{b['start_time']}\u2013{b['end_time']} | "
             f"{c} {strings.child_label(c)} | "
-            f"{loc} | "
+            f"📍 {addr} | "
             f"{b['user_name']} (ID: {b['user_id']})"
         )
     await update.message.reply_text("\n".join(lines))

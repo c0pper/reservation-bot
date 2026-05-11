@@ -58,6 +58,10 @@ def init_db() -> None:
         conn.execute("ALTER TABLE bookings ADD COLUMN longitude REAL")
     except sqlite3.OperationalError:
         pass
+    try:
+        conn.execute("ALTER TABLE bookings ADD COLUMN address TEXT")
+    except sqlite3.OperationalError:
+        pass
     conn.commit()
     conn.close()
 
@@ -84,12 +88,12 @@ def set_schedule(slots: list[tuple[int, str, str]]) -> None:
 
 
 def add_booking(
-    user_id: int, user_name: str, date: str, start_time: str, end_time: str, children: int = 1, latitude: float | None = None, longitude: float | None = None
+    user_id: int, user_name: str, date: str, start_time: str, end_time: str, children: int = 1, latitude: float | None = None, longitude: float | None = None, address: str | None = None
 ) -> int:
     conn = get_conn()
     cur = conn.execute(
-        "INSERT INTO bookings (user_id, user_name, date, start_time, end_time, children, latitude, longitude) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (user_id, user_name, date, start_time, end_time, children, latitude, longitude),
+        "INSERT INTO bookings (user_id, user_name, date, start_time, end_time, children, latitude, longitude, address) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (user_id, user_name, date, start_time, end_time, children, latitude, longitude, address),
     )
     conn.commit()
     booking_id = cur.lastrowid
@@ -127,7 +131,7 @@ def cancel_booking(booking_id: int, user_id: int, sitter_mode: bool = False) -> 
 def get_user_bookings(user_id: int, status: str = "confirmed") -> list[dict]:
     conn = get_conn()
     rows = conn.execute(
-        "SELECT id, date, start_time, end_time, children, latitude, longitude, status FROM bookings WHERE user_id = ? AND status = ? AND date >= date('now') ORDER BY date, start_time",
+        "SELECT id, date, start_time, end_time, children, latitude, longitude, address, status FROM bookings WHERE user_id = ? AND status = ? AND date >= date('now') ORDER BY date, start_time",
         (user_id, status),
     )
     result = [dict(r) for r in rows.fetchall()]
@@ -149,7 +153,7 @@ def get_bookings_for_date(date_str: str) -> list[dict]:
 def get_all_bookings(status: str = "confirmed") -> list[dict]:
     conn = get_conn()
     rows = conn.execute(
-        "SELECT id, user_id, user_name, date, start_time, end_time, children, latitude, longitude, status, created_at FROM bookings WHERE status = ? AND date >= date('now') ORDER BY date, start_time",
+        "SELECT id, user_id, user_name, date, start_time, end_time, children, latitude, longitude, address, status, created_at FROM bookings WHERE status = ? AND date >= date('now') ORDER BY date, start_time",
         (status,),
     )
     result = [dict(r) for r in rows.fetchall()]

@@ -89,7 +89,7 @@ def fmt_start(name: str) -> str:
 NO_SCHEDULE = "Nessun orario configurato. Riprova più tardi."
 NO_SLOTS_14 = "Nessuno slot disponibile nei prossimi 14 giorni. Riprova più tardi."
 SELECT_LOCATION = "📍 Invia la tua posizione per indicare l'indirizzo:"
-CONFIRM_LOCATION = "📍 Posizione confermata!"
+CONFIRM_LOCATION = "📍 Posizione confermata: {address}"
 SELECT_DATE = "Seleziona una data (solo slot disponibili):"
 NO_AVAILABILITY_DAY = "Nessuna disponibilità in questo giorno."
 NO_SLOTS_DATE = "Nessuno slot disponibile il {date}. Scegli un'altra data."
@@ -103,7 +103,7 @@ BOOKING_SUMMARY = (
     "Data: {date}\n"
     "Orario: {start} \u2013 {end} ({hours} {h_label})\n"
     "Bambini: {children}\n"
-    "📍 Posizione registrata\n"
+    "📍 {address}\n"
     "Nome: {name}\n\n"
     "Confermi?"
 )
@@ -113,6 +113,7 @@ BOOKING_CONFIRMED_TXT = (
     "Data: {date}\n"
     "Orario: {start} \u2013 {end}\n"
     "Bambini: {children}\n"
+    "📍 {address}\n"
     "ID prenotazione: #{id}\n\n"
     "Usa /my_bookings per vedere le tue prenotazioni "
     "o /cancel per annullarle."
@@ -123,7 +124,8 @@ SITTER_NEW_BOOKING = (
     "Cliente: {name} (ID: {uid})\n"
     "Data: {date}\n"
     "Orario: {start} \u2013 {end}\n"
-    "Bambini: {children}"
+    "Bambini: {children}\n"
+    "📍 {address}"
 )
 
 BOOKING_CANCELLED_OVER = "Prenotazione annullata. Usa /book per ricominciare."
