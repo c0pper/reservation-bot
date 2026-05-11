@@ -206,19 +206,60 @@ async def location_received(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     logger.info("User %d entered address: %s", user.id, text)
     context.user_data["booking_address_raw"] = text
 
-    result = await geocoder.forward_geocode(text)
-    if result is None:
+    results = await geocoder.forward_geocode(text)
+    if not results:
         logger.info("User %d address not in Campania or geocode failed: %s", user.id, text)
         await update.message.reply_text(strings.LOCATION_NOT_FOUND)
         return LOCATION
 
-    lat, lon, formatted = result
+    if len(results) == 1:
+        lat, lon, formatted = results[0]
+        context.user_data["booking_lat"] = lat
+        context.user_data["booking_lon"] = lon
+        context.user_data["booking_address"] = formatted
+
+        logger.info("User %d geocoded address: %s (%.6f, %.6f)", user.id, formatted, lat, lon)
+        await update.message.reply_text(strings.CONFIRM_LOCATION.format(address=formatted))
+        date_str = context.user_data["booking_date"]
+        return await _show_time_picker(update, context, date_str)
+
+    context.user_data["booking_location_results"] = results
+    keyboard = []
+    for i, (_, _, formatted) in enumerate(results):
+        label = formatted[:50] + "..." if len(formatted) > 50 else formatted
+        keyboard.append([InlineKeyboardButton(label, callback_data=f"loc_{i}")])
+    keyboard.append([
+        InlineKeyboardButton(strings.BTN_BACK, callback_data="back"),
+        InlineKeyboardButton(strings.BTN_CANCEL, callback_data="cancel"),
+    ])
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text(strings.MULTIPLE_LOCATIONS, reply_markup=reply_markup)
+    return LOCATION
+
+
+async def location_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    user = update.effective_user
+    data = query.data
+
+    if data == "cancel":
+        return await _booking_cancel(update, context)
+
+    if data == "back":
+        return await _show_location_picker(update, context)
+
+    idx = int(data[4:])
+    results = context.user_data["booking_location_results"]
+    lat, lon, formatted = results[idx]
+
     context.user_data["booking_lat"] = lat
     context.user_data["booking_lon"] = lon
     context.user_data["booking_address"] = formatted
 
-    logger.info("User %d geocoded address: %s (%.6f, %.6f)", user.id, formatted, lat, lon)
-    await update.message.reply_text(strings.CONFIRM_LOCATION.format(address=formatted))
+    logger.info("User %d selected address: %s (%.6f, %.6f)", user.id, formatted, lat, lon)
+    await query.edit_message_reply_markup(None)
+    await query.message.reply_text(strings.CONFIRM_LOCATION.format(address=formatted))
     date_str = context.user_data["booking_date"]
     return await _show_time_picker(update, context, date_str)
 
@@ -565,6 +606,7 @@ book_conv = ConversationHandler(
             CallbackQueryHandler(date_chosen, pattern="^(date_|noop|back|cancel)"),
         ],
         LOCATION: [
+            CallbackQueryHandler(location_chosen, pattern="^(loc_\\d+|back|cancel)$"),
             MessageHandler(filters.TEXT & ~filters.COMMAND, location_received),
         ],
         START_TIME: [
