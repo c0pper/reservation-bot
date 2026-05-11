@@ -57,5 +57,32 @@ async def forward_geocode(text: str) -> list[tuple[float, float, str]]:
                 logger.info("No Campania result for address: %s", text)
             return results
     except Exception as e:
-        logger.exception("Forward geocode failed for '%s': %s", text, e)
-        return []
+            logger.exception("Forward geocode failed for '%s': %s", text, e)
+            return []
+
+
+async def get_transit_time(
+    lat1: float, lon1: float, lat2: float, lon2: float, mode: str = "bus"
+) -> float | None:
+    if not GEOAPIFY_API_KEY:
+        logger.warning("GEOAPIFY_API_KEY not set — skipping routing")
+        return None
+
+    url = (
+        f"https://api.geoapify.com/v1/routing?"
+        f"waypoints={lat1},{lon1}|{lat2},{lon2}&mode={mode}&apiKey={GEOAPIFY_API_KEY}"
+    )
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+            data = resp.json()
+            features = data.get("features", [])
+            if not features:
+                return None
+            properties = features[0].get("properties", {})
+            travel_time = properties.get("time")
+            return travel_time + 1800 if travel_time is not None else None
+    except Exception as e:
+        logger.exception("Routing failed for (%f,%f) -> (%f,%f): %s", lat1, lon1, lat2, lon2, e)
+        return None

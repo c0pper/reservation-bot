@@ -287,6 +287,48 @@ async def date_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     return await _show_location_picker(update, context)
 
 
+async def _filter_starts_by_transit(
+    starts: list[str],
+    bookings: list[dict],
+    dest_lat: float,
+    dest_lon: float,
+) -> list[str]:
+    confirmed = [b for b in bookings if b.get("latitude") is not None and b["status"] == "confirmed"]
+    if not confirmed:
+        return starts
+
+    result = []
+
+    def find_prev(start_min: int) -> dict | None:
+        prev = None
+        for b in confirmed:
+            if sch._to_min(b["end_time"]) <= start_min:
+                prev = b
+        return prev
+
+    for t in starts:
+        t_min = sch._to_min(t)
+        prev = find_prev(t_min)
+        if prev is None:
+            result.append(t)
+            continue
+
+        travel_time = await geocoder.get_transit_time(
+            prev["latitude"], prev["longitude"], dest_lat, dest_lon, mode="bus"
+        )
+
+        if travel_time is None:
+            result.append(t)
+            continue
+
+        travel_min = travel_time / 60
+        prev_end_min = sch._to_min(prev["end_time"])
+        if t_min >= prev_end_min + travel_min:
+            result.append(t)
+
+    return result
+
+
 async def _show_time_picker(
     update: Update, context: ContextTypes.DEFAULT_TYPE, date_str: str
 ) -> int:
@@ -297,6 +339,15 @@ async def _show_time_picker(
 
     now_str = datetime.now().strftime("%H:%M") if d == date.today() else None
     starts = sch.get_available_start_times(schedule, bookings, d, current_time=now_str)
+
+    new_lat = context.user_data.get("booking_lat")
+    new_lon = context.user_data.get("booking_lon")
+
+    logger.info("User %d: filtering time slots by transit for %s (dest: %.6f, %.6f)", user.id, date_str, new_lat, new_lon)
+    if new_lat is not None and new_lon is not None:
+        starts = await _filter_starts_by_transit(starts, bookings, new_lat, new_lon)
+        logger.info("User %d: filtered time slots by transit for %s (dest: %.6f, %.6f): %d", user.id, date_str, new_lat, new_lon, len(starts))
+
     logger.info("User %d: time picker for %s (%d slots)", user.id, date_str, len(starts))
 
     if not starts:

@@ -142,7 +142,7 @@ def get_user_bookings(user_id: int, status: str = "confirmed") -> list[dict]:
 def get_bookings_for_date(date_str: str) -> list[dict]:
     conn = get_conn()
     rows = conn.execute(
-        "SELECT start_time, end_time, status FROM bookings WHERE date = ? AND status = 'confirmed' ORDER BY start_time",
+        "SELECT start_time, end_time, status, latitude, longitude FROM bookings WHERE date = ? AND status = 'confirmed' ORDER BY start_time",
         (date_str,),
     )
     result = [dict(r) for r in rows.fetchall()]
