@@ -1266,6 +1266,82 @@ set_schedule_conv = ConversationHandler(
 
 # ── /admin ──────────────────────────────────────────────────────────────
 
+def _build_timeline(bookings: list[dict], schedule: list[dict]) -> list[str]:
+    if not bookings:
+        return []
+
+    by_date: dict[str, list[dict]] = {}
+    for b in bookings:
+        by_date.setdefault(b["date"], []).append(b)
+    for day_bookings in by_date.values():
+        day_bookings.sort(key=lambda b: b["start_time"])
+
+    windows_by_day: dict[int, list[tuple[str, str]]] = {}
+    for s in schedule:
+        windows_by_day.setdefault(s["day_of_week"], []).append(
+            (s["start_time"], s["end_time"])
+        )
+    for windows in windows_by_day.values():
+        windows.sort()
+
+    lines: list[str] = []
+    for date_str in sorted(by_date.keys()):
+        d = date.fromisoformat(date_str)
+        lines.append(f"📅 {strings.fmt_date_abbr_long(d)}")
+
+        day_bookings = by_date[date_str]
+        weekday = d.weekday()
+        windows = windows_by_day.get(weekday, [])
+
+        if not windows:
+            for b in day_bookings:
+                lines.append(_booking_line(b))
+            lines.append("")
+            continue
+
+        for win_start, win_end in windows:
+            lines.append(strings.ADMIN_WINDOW_HEADER.format(start=win_start, end=win_end))
+            win_bookings = [
+                b for b in day_bookings
+                if sch._to_min(win_start) <= sch._to_min(b["start_time"]) < sch._to_min(win_end)
+            ]
+            if not win_bookings:
+                lines.append(strings.ADMIN_FREE_WINDOW)
+            else:
+                for i, b in enumerate(win_bookings):
+                    lines.append(_booking_line(b))
+                    if i < len(win_bookings) - 1:
+                        next_b = win_bookings[i + 1]
+                        gap_min = sch._to_min(next_b["start_time"]) - sch._to_min(b["end_time"])
+                        if gap_min > 0:
+                            lines.append(strings.ADMIN_GAP.format(minutes=gap_min))
+        lines.append("")
+
+    return lines
+
+
+def _booking_line(b: dict) -> str:
+    c = b.get("children", 1)
+    addr = b.get("address")
+    name = b["user_name"]
+    if addr:
+        return strings.ADMIN_BOOKING_LINE.format(
+            start=b["start_time"],
+            end=b["end_time"],
+            id=b["id"],
+            name=name,
+            address=addr[:30],
+            children=f"{c} {strings.child_label(c)}",
+        )
+    return strings.ADMIN_BOOKING_NOLOC.format(
+        start=b["start_time"],
+        end=b["end_time"],
+        id=b["id"],
+        name=name,
+        children=f"{c} {strings.child_label(c)}",
+    )
+
+
 async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _is_sitter(update):
         logger.info("Non-sitter user %d tried /admin", update.effective_user.id)
@@ -1278,17 +1354,29 @@ async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(strings.ADMIN_NO_BOOKINGS)
         return
 
-    logger.info("Sitter viewed admin: %d upcoming booking(s)", len(bookings))
-    lines = [strings.ADMIN_HEADER]
-    for b in bookings:
-        d = date.fromisoformat(b["date"])
-        c = b.get("children", 1)
-        addr = b.get("address") or "—"
-        lines.append(
-            f"  #{b['id']} \u2014 {strings.fmt_date_abbr_long(d)} "
-            f"{b['start_time']}\u2013{b['end_time']} | "
-            f"{c} {strings.child_label(c)} | "
-            f"📍 {addr} | "
-            f"{b['user_name']} (ID: {b['user_id']})"
-        )
-    await update.message.reply_text("\n".join(lines))
+    schedule = db.get_schedule()
+    logger.info("Sitter viewed admin: %d booking(s), %d schedule windows", len(bookings), len(schedule))
+
+    timeline_lines = _build_timeline(bookings, schedule)
+    if not timeline_lines:
+        await update.message.reply_text(strings.ADMIN_NO_BOOKINGS)
+        return
+
+    header = strings.ADMIN_TIMELINE_HEADER
+    chunks: list[str] = []
+    chunk: list[str] = [header]
+
+    for line in timeline_lines:
+        if len("\n".join(chunk)) + len(line) + 1 > 3800:
+            chunks.append("\n".join(chunk))
+            chunk = [header, line]
+        else:
+            chunk.append(line)
+
+    chunks.append("\n".join(chunk))
+
+    for i, text in enumerate(chunks):
+        if i == 0:
+            await update.message.reply_text(text)
+        else:
+            await context.bot.send_message(chat_id=update.effective_chat.id, text=text)

@@ -189,7 +189,12 @@ USE_BUTTONS_SCHEDULE = "Usa i pulsanti qui sopra, o digita /cancel per uscire."
 
 ADMIN_SITTER_ONLY = "Questo comando è solo per la baby sitter."
 ADMIN_NO_BOOKINGS = "Nessuna prenotazione imminente."
-ADMIN_HEADER = "📋 Tutte le prenotazioni confermate imminenti:"
+ADMIN_TIMELINE_HEADER = "📋 Programma settimanale"
+ADMIN_WINDOW_HEADER = "\n  🕐 {start}-{end}"
+ADMIN_BOOKING_LINE = "    ▸ {start}-{end}  #{id} {name} 📍{address} ({children})"
+ADMIN_BOOKING_NOLOC = "    ▸ {start}-{end}  #{id} {name} ({children})"
+ADMIN_GAP = "    ══ {minutes} min liberi ══"
+ADMIN_FREE_WINDOW = "    ── libera ──"
 
 
 # ── scheduler.py strings ───────────────────────────────────────
