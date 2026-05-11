@@ -88,7 +88,8 @@ def fmt_start(name: str) -> str:
 
 NO_SCHEDULE = "Nessun orario configurato. Riprova più tardi."
 NO_SLOTS_14 = "Nessuno slot disponibile nei prossimi 14 giorni. Riprova più tardi."
-SELECT_LOCATION = "📍 Tocca l\u2019icona 📎 (allegati) accanto al messaggio, scegli Posizione, cerca o tocca un punto sulla mappa, poi invia."
+SELECT_LOCATION = "Digita l'indirizzo dove hai bisogno della babysitter (es. Via Roma 1, Napoli):"
+LOCATION_NOT_FOUND = "Indirizzo non trovato in Campania. Riprova con un indirizzo della regione Campania, oppure digita \u2018Indietro\u2019 per tornare alla scelta della data."
 CONFIRM_LOCATION = "📍 Posizione confermata: {address}"
 SELECT_DATE = "Seleziona una data (solo slot disponibili):"
 NO_AVAILABILITY_DAY = "Nessuna disponibilità in questo giorno."

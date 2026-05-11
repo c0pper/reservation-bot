@@ -4,7 +4,7 @@ from datetime import date, datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     CallbackQueryHandler,
     CommandHandler,
@@ -186,43 +186,43 @@ async def _show_date_picker_as_new_message(update: Update, context: ContextTypes
 
 
 async def _show_location_picker(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    keyboard = [
-        [KeyboardButton("Indietro")],
-    ]
-    reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True)
     if update.callback_query:
         query = update.callback_query
         await query.edit_message_reply_markup(None)
-        await query.message.reply_text(strings.SELECT_LOCATION, reply_markup=reply_markup)
+        await query.message.reply_text(strings.SELECT_LOCATION)
     else:
-        await update.message.reply_text(strings.SELECT_LOCATION, reply_markup=reply_markup)
+        await update.message.reply_text(strings.SELECT_LOCATION)
     return LOCATION
-
-
-async def location_back(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    logger.info("User %d went back from location picker", update.effective_user.id)
-    await update.message.reply_text("\u274c", reply_markup=ReplyKeyboardRemove())
-    return await _show_date_picker_as_new_message(update, context)
 
 
 async def location_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user = update.effective_user
-    location = update.message.location
-    logger.info("User %d sent location: %f, %f", user.id, location.latitude, location.longitude)
-    context.user_data["booking_lat"] = location.latitude
-    context.user_data["booking_lon"] = location.longitude
+    text = update.message.text.strip()
 
-    address = await geocoder.reverse_geocode(location.latitude, location.longitude)
-    context.user_data["booking_address"] = address
-    logger.info("User %d geocoded address: %s", user.id, address)
+    if text.lower() == "indietro":
+        logger.info("User %d went back from location picker", user.id)
+        return await _show_date_picker_as_new_message(update, context)
 
-    address_str = address if address else "—"
-    await update.message.reply_text(
-        strings.CONFIRM_LOCATION.format(address=address_str),
-        reply_markup=ReplyKeyboardRemove(),
-    )
+    logger.info("User %d entered address: %s", user.id, text)
+    context.user_data["booking_address_raw"] = text
+
+    result = await geocoder.forward_geocode(text)
+    if result is None:
+        logger.info("User %d address not in Campania or geocode failed: %s", user.id, text)
+        await update.message.reply_text(strings.LOCATION_NOT_FOUND)
+        return LOCATION
+
+    lat, lon, formatted = result
+    context.user_data["booking_lat"] = lat
+    context.user_data["booking_lon"] = lon
+    context.user_data["booking_address"] = formatted
+
+    logger.info("User %d geocoded address: %s (%.6f, %.6f)", user.id, formatted, lat, lon)
+    await update.message.reply_text(strings.CONFIRM_LOCATION.format(address=formatted))
     date_str = context.user_data["booking_date"]
     return await _show_time_picker(update, context, date_str)
+
+
 
 
 async def date_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -565,8 +565,7 @@ book_conv = ConversationHandler(
             CallbackQueryHandler(date_chosen, pattern="^(date_|noop|back|cancel)"),
         ],
         LOCATION: [
-            MessageHandler(filters.LOCATION, location_received),
-            MessageHandler(filters.TEXT & ~filters.COMMAND, location_back),
+            MessageHandler(filters.TEXT & ~filters.COMMAND, location_received),
         ],
         START_TIME: [
             CallbackQueryHandler(time_chosen, pattern="^(time_|back|cancel)"),
