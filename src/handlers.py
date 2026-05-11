@@ -4,7 +4,7 @@ from datetime import date, datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     CallbackQueryHandler,
     CommandHandler,
@@ -186,43 +186,84 @@ async def _show_date_picker_as_new_message(update: Update, context: ContextTypes
 
 
 async def _show_location_picker(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    keyboard = [
-        [KeyboardButton("Indietro")],
-    ]
-    reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True)
     if update.callback_query:
         query = update.callback_query
         await query.edit_message_reply_markup(None)
-        await query.message.reply_text(strings.SELECT_LOCATION, reply_markup=reply_markup)
+        await query.message.reply_text(strings.SELECT_LOCATION)
     else:
-        await update.message.reply_text(strings.SELECT_LOCATION, reply_markup=reply_markup)
+        await update.message.reply_text(strings.SELECT_LOCATION)
     return LOCATION
-
-
-async def location_back(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    logger.info("User %d went back from location picker", update.effective_user.id)
-    await update.message.reply_text("\u274c", reply_markup=ReplyKeyboardRemove())
-    return await _show_date_picker_as_new_message(update, context)
 
 
 async def location_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user = update.effective_user
-    location = update.message.location
-    logger.info("User %d sent location: %f, %f", user.id, location.latitude, location.longitude)
-    context.user_data["booking_lat"] = location.latitude
-    context.user_data["booking_lon"] = location.longitude
+    text = update.message.text.strip()
 
-    address = await geocoder.reverse_geocode(location.latitude, location.longitude)
-    context.user_data["booking_address"] = address
-    logger.info("User %d geocoded address: %s", user.id, address)
+    if text.lower() == "indietro":
+        logger.info("User %d went back from location picker", user.id)
+        return await _show_date_picker_as_new_message(update, context)
 
-    address_str = address if address else "—"
-    await update.message.reply_text(
-        strings.CONFIRM_LOCATION.format(address=address_str),
-        reply_markup=ReplyKeyboardRemove(),
-    )
+    logger.info("User %d entered address: %s", user.id, text)
+    context.user_data["booking_address_raw"] = text
+
+    results = await geocoder.forward_geocode(text)
+    if not results:
+        logger.info("User %d address not in Campania or geocode failed: %s", user.id, text)
+        await update.message.reply_text(strings.LOCATION_NOT_FOUND)
+        return LOCATION
+
+    if len(results) == 1:
+        lat, lon, formatted = results[0]
+        context.user_data["booking_lat"] = lat
+        context.user_data["booking_lon"] = lon
+        context.user_data["booking_address"] = formatted
+
+        logger.info("User %d geocoded address: %s (%.6f, %.6f)", user.id, formatted, lat, lon)
+        await update.message.reply_text(strings.CONFIRM_LOCATION.format(address=formatted))
+        date_str = context.user_data["booking_date"]
+        return await _show_time_picker(update, context, date_str)
+
+    context.user_data["booking_location_results"] = results
+    keyboard = []
+    for i, (_, _, formatted) in enumerate(results):
+        label = formatted[:50] + "..." if len(formatted) > 50 else formatted
+        keyboard.append([InlineKeyboardButton(label, callback_data=f"loc_{i}")])
+    keyboard.append([
+        InlineKeyboardButton(strings.BTN_BACK, callback_data="back"),
+        InlineKeyboardButton(strings.BTN_CANCEL, callback_data="cancel"),
+    ])
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text(strings.MULTIPLE_LOCATIONS, reply_markup=reply_markup)
+    return LOCATION
+
+
+async def location_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    user = update.effective_user
+    data = query.data
+
+    if data == "cancel":
+        return await _booking_cancel(update, context)
+
+    if data == "back":
+        return await _show_location_picker(update, context)
+
+    idx = int(data[4:])
+    results = context.user_data["booking_location_results"]
+    lat, lon, formatted = results[idx]
+
+    context.user_data["booking_lat"] = lat
+    context.user_data["booking_lon"] = lon
+    context.user_data["booking_address"] = formatted
+
+    logger.info("User %d selected address: %s (%.6f, %.6f)", user.id, formatted, lat, lon)
+    await query.edit_message_reply_markup(None)
+    await query.message.reply_text(strings.CONFIRM_LOCATION.format(address=formatted))
     date_str = context.user_data["booking_date"]
     return await _show_time_picker(update, context, date_str)
+
+
 
 
 async def date_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -246,6 +287,87 @@ async def date_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     return await _show_location_picker(update, context)
 
 
+async def _filter_starts_by_transit(
+    starts: list[str],
+    bookings: list[dict],
+    dest_lat: float,
+    dest_lon: float,
+) -> list[str]:
+    confirmed = [b for b in bookings if b.get("latitude") is not None and b["status"] == "confirmed"]
+    if not confirmed:
+        return starts
+
+    transit_cache: dict[tuple[float, float], float] = {}
+    result = []
+
+    def find_prev(start_min: int) -> dict | None:
+        prev = None
+        for b in confirmed:
+            if sch._to_min(b["end_time"]) <= start_min:
+                prev = b
+        return prev
+
+    for t in starts:
+        t_min = sch._to_min(t)
+        prev = find_prev(t_min)
+        if prev is None:
+            result.append(t)
+            continue
+
+        key = (prev["latitude"], prev["longitude"])
+        if key not in transit_cache:
+            travel_seconds = await geocoder.get_transit_time(
+                prev["latitude"], prev["longitude"], dest_lat, dest_lon, mode="drive"
+            )
+            transit_cache[key] = travel_seconds
+
+        travel_time = transit_cache[key]
+        if travel_time is None:
+            result.append(t)
+            continue
+
+        travel_min = travel_time / 60
+        prev_end_min = sch._to_min(prev["end_time"])
+        if t_min >= prev_end_min + travel_min:
+            result.append(t)
+
+    return result
+
+
+async def _filter_durations_by_transit(
+    options: list[tuple[str, str]],
+    bookings: list[dict],
+    start_time: str,
+    current_lat: float,
+    current_lon: float,
+) -> list[tuple[str, str]]:
+    start_min = sch._to_min(start_time)
+    confirmed = [
+        b for b in bookings
+        if b.get("latitude") is not None and b["status"] == "confirmed" and sch._to_min(b["start_time"]) > start_min
+    ]
+    if not confirmed:
+        return options
+
+    next_b = min(confirmed, key=lambda b: sch._to_min(b["start_time"]))
+    travel_seconds = await geocoder.get_transit_time(
+        current_lat, current_lon, next_b["latitude"], next_b["longitude"], mode="drive"
+    )
+    if travel_seconds is None:
+        return options
+
+    travel_min = travel_seconds / 60
+    next_start_min = sch._to_min(next_b["start_time"])
+    max_allowed_end = next_start_min - travel_min
+
+    filtered = []
+    for s, e in options:
+        if sch._to_min(e) <= max_allowed_end:
+            filtered.append((s, e))
+
+    return filtered
+
+
 async def _show_time_picker(
     update: Update, context: ContextTypes.DEFAULT_TYPE, date_str: str
 ) -> int:
@@ -256,6 +378,15 @@ async def _show_time_picker(
 
     now_str = datetime.now().strftime("%H:%M") if d == date.today() else None
     starts = sch.get_available_start_times(schedule, bookings, d, current_time=now_str)
+
+    new_lat = context.user_data.get("booking_lat")
+    new_lon = context.user_data.get("booking_lon")
+
+    logger.info("User %d: filtering time slots by transit for %s (dest: %.6f, %.6f)", user.id, date_str, new_lat, new_lon)
+    if new_lat is not None and new_lon is not None:
+        starts = await _filter_starts_by_transit(starts, bookings, new_lat, new_lon)
+        logger.info("User %d: filtered time slots by transit for %s (dest: %.6f, %.6f): %d", user.id, date_str, new_lat, new_lon, len(starts))
+
     logger.info("User %d: time picker for %s (%d slots)", user.id, date_str, len(starts))
 
     if not starts:
@@ -317,7 +448,15 @@ async def _show_duration_picker(
     bookings = db.get_bookings_for_date(date_str)
 
     options = sch.get_duration_options(schedule, bookings, d, start_time)
-    logger.info("User %d: duration picker for %s at %s (%d options)", user.id, date_str, start_time, len(options))
+
+    current_lat = context.user_data.get("booking_lat")
+    current_lon = context.user_data.get("booking_lon")
+    logger.info(f"User {user.id}: filtering durations by transit for {date_str} at {start_time} (dest: {current_lat}, {current_lon}) ({len(options)} options before filtering)")
+    if current_lat is not None and current_lon is not None:
+        options = await _filter_durations_by_transit(options, bookings, start_time, current_lat, current_lon)
+        logger.info(f"User {user.id}: filtered durations by transit for {date_str} at {start_time}: {len(options)}")
+
+    logger.info(f"User {user.id}: duration picker for {date_str} at {start_time}: {len(options)}")
 
     if not options:
         keyboard = [[InlineKeyboardButton(strings.BTN_BACK, callback_data="back")]]
@@ -565,8 +704,8 @@ book_conv = ConversationHandler(
             CallbackQueryHandler(date_chosen, pattern="^(date_|noop|back|cancel)"),
         ],
         LOCATION: [
-            MessageHandler(filters.LOCATION, location_received),
-            MessageHandler(filters.TEXT & ~filters.COMMAND, location_back),
+            CallbackQueryHandler(location_chosen, pattern="^(loc_\\d+|back|cancel)$"),
+            MessageHandler(filters.TEXT & ~filters.COMMAND, location_received),
         ],
         START_TIME: [
             CallbackQueryHandler(time_chosen, pattern="^(time_|back|cancel)"),
@@ -639,6 +778,7 @@ async def cancel_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         label = f"#{b['id']} \u2014 {strings.fmt_date_abbr(d)} {b['start_time']}\u2013{b['end_time']} ({c})"
         keyboard.append([InlineKeyboardButton(label, callback_data=f"cancel_sel_{b['id']}")])
 
+    keyboard.append([InlineKeyboardButton(strings.BTN_CANCEL_ALL, callback_data="cancel_all")])
     keyboard.append([InlineKeyboardButton(strings.BTN_CANCEL_EXIT, callback_data="cancel_exit")])
 
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -657,6 +797,20 @@ async def cancel_select(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         await query.edit_message_text(strings.CANCELLATION_ABORTED)
         context.user_data.clear()
         return ConversationHandler.END
+
+    if data == "cancel_all":
+        logger.info("User %d selected cancel all", user.id)
+        context.user_data["cancel_all"] = True
+
+        keyboard = [
+            [
+                InlineKeyboardButton(strings.BTN_YES_CANCEL, callback_data="cancel_all_yes"),
+                InlineKeyboardButton(strings.BTN_NO_BACK, callback_data="cancel_all_no"),
+            ],
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(strings.CANCEL_ALL_PROMPT, reply_markup=reply_markup)
+        return CANCEL_CONFIRM
 
     booking_id = int(data.split("_")[-1])
     context.user_data["cancel_booking_id"] = booking_id
@@ -700,6 +854,24 @@ async def cancel_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     user = update.effective_user
 
     data = query.data
+
+    if context.user_data.get("cancel_all"):
+        if data == "cancel_all_no":
+            logger.info("User %d went back from cancel all confirmation", user.id)
+            return await _show_cancel_list(update, context)
+
+        if data == "cancel_all_yes":
+            count = db.cancel_user_bookings(user.id)
+            logger.info("User %d cancelled all %d bookings", user.id, count)
+            await query.edit_message_text(strings.BOOKINGS_ALL_CANCELLED.format(count=count))
+            if count > 0:
+                await notify_sitter(
+                    context.bot,
+                    strings.SITTER_CANCEL_ALL_NOTE.format(name=user.first_name, count=count),
+                )
+            context.user_data.clear()
+            return ConversationHandler.END
+
     if data == "cancel_no":
         logger.info("User %d went back from cancel confirmation", user.id)
         return await _show_cancel_list(update, context)
@@ -751,6 +923,7 @@ async def _show_cancel_list(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         label = f"#{b['id']} \u2014 {strings.fmt_date_abbr(d)} {b['start_time']}\u2013{b['end_time']} ({c})"
         keyboard.append([InlineKeyboardButton(label, callback_data=f"cancel_sel_{b['id']}")])
 
+    keyboard.append([InlineKeyboardButton(strings.BTN_CANCEL_ALL, callback_data="cancel_all")])
     keyboard.append([InlineKeyboardButton(strings.BTN_CANCEL_EXIT, callback_data="cancel_exit")])
 
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -780,10 +953,10 @@ cancel_conv = ConversationHandler(
     entry_points=[CommandHandler("cancel", cancel_start)],
     states={
         CANCEL_SELECT: [
-            CallbackQueryHandler(cancel_select, pattern="^cancel_sel_|^cancel_exit$"),
+            CallbackQueryHandler(cancel_select, pattern="^cancel_sel_|^cancel_exit$|^cancel_all$"),
         ],
         CANCEL_CONFIRM: [
-            CallbackQueryHandler(cancel_confirm, pattern="^cancel_yes$|^cancel_no$|^cancel_exit$"),
+            CallbackQueryHandler(cancel_confirm, pattern="^cancel_yes$|^cancel_no$|^cancel_exit$|^cancel_all_yes$|^cancel_all_no$"),
         ],
     },
     fallbacks=[
@@ -1127,6 +1300,82 @@ set_schedule_conv = ConversationHandler(
 
 # ── /admin ──────────────────────────────────────────────────────────────
 
+def _build_timeline(bookings: list[dict], schedule: list[dict]) -> list[str]:
+    if not bookings:
+        return []
+
+    by_date: dict[str, list[dict]] = {}
+    for b in bookings:
+        by_date.setdefault(b["date"], []).append(b)
+    for day_bookings in by_date.values():
+        day_bookings.sort(key=lambda b: b["start_time"])
+
+    windows_by_day: dict[int, list[tuple[str, str]]] = {}
+    for s in schedule:
+        windows_by_day.setdefault(s["day_of_week"], []).append(
+            (s["start_time"], s["end_time"])
+        )
+    for windows in windows_by_day.values():
+        windows.sort()
+
+    lines: list[str] = []
+    for date_str in sorted(by_date.keys()):
+        d = date.fromisoformat(date_str)
+        lines.append(f"📅 {strings.fmt_date_abbr_long(d)}")
+
+        day_bookings = by_date[date_str]
+        weekday = d.weekday()
+        windows = windows_by_day.get(weekday, [])
+
+        if not windows:
+            for b in day_bookings:
+                lines.append(_booking_line(b))
+            lines.append("")
+            continue
+
+        for win_start, win_end in windows:
+            lines.append(strings.ADMIN_WINDOW_HEADER.format(start=win_start, end=win_end))
+            win_bookings = [
+                b for b in day_bookings
+                if sch._to_min(win_start) <= sch._to_min(b["start_time"]) < sch._to_min(win_end)
+            ]
+            if not win_bookings:
+                lines.append(strings.ADMIN_FREE_WINDOW)
+            else:
+                for i, b in enumerate(win_bookings):
+                    lines.append(_booking_line(b))
+                    if i < len(win_bookings) - 1:
+                        next_b = win_bookings[i + 1]
+                        gap_min = sch._to_min(next_b["start_time"]) - sch._to_min(b["end_time"])
+                        if gap_min > 0:
+                            lines.append(strings.ADMIN_GAP.format(minutes=gap_min))
+        lines.append("")
+
+    return lines
+
+
+def _booking_line(b: dict) -> str:
+    c = b.get("children", 1)
+    addr = b.get("address")
+    name = b["user_name"]
+    if addr:
+        return strings.ADMIN_BOOKING_LINE.format(
+            start=b["start_time"],
+            end=b["end_time"],
+            id=b["id"],
+            name=name,
+            address=addr[:30],
+            children=f"{c} {strings.child_label(c)}",
+        )
+    return strings.ADMIN_BOOKING_NOLOC.format(
+        start=b["start_time"],
+        end=b["end_time"],
+        id=b["id"],
+        name=name,
+        children=f"{c} {strings.child_label(c)}",
+    )
+
+
 async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _is_sitter(update):
         logger.info("Non-sitter user %d tried /admin", update.effective_user.id)
@@ -1139,17 +1388,29 @@ async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(strings.ADMIN_NO_BOOKINGS)
         return
 
-    logger.info("Sitter viewed admin: %d upcoming booking(s)", len(bookings))
-    lines = [strings.ADMIN_HEADER]
-    for b in bookings:
-        d = date.fromisoformat(b["date"])
-        c = b.get("children", 1)
-        addr = b.get("address") or "—"
-        lines.append(
-            f"  #{b['id']} \u2014 {strings.fmt_date_abbr_long(d)} "
-            f"{b['start_time']}\u2013{b['end_time']} | "
-            f"{c} {strings.child_label(c)} | "
-            f"📍 {addr} | "
-            f"{b['user_name']} (ID: {b['user_id']})"
-        )
-    await update.message.reply_text("\n".join(lines))
+    schedule = db.get_schedule()
+    logger.info("Sitter viewed admin: %d booking(s), %d schedule windows", len(bookings), len(schedule))
+
+    timeline_lines = _build_timeline(bookings, schedule)
+    if not timeline_lines:
+        await update.message.reply_text(strings.ADMIN_NO_BOOKINGS)
+        return
+
+    header = strings.ADMIN_TIMELINE_HEADER
+    chunks: list[str] = []
+    chunk: list[str] = [header]
+
+    for line in timeline_lines:
+        if len("\n".join(chunk)) + len(line) + 1 > 3800:
+            chunks.append("\n".join(chunk))
+            chunk = [header, line]
+        else:
+            chunk.append(line)
+
+    chunks.append("\n".join(chunk))
+
+    for i, text in enumerate(chunks):
+        if i == 0:
+            await update.message.reply_text(text)
+        else:
+            await context.bot.send_message(chat_id=update.effective_chat.id, text=text)

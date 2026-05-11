@@ -27,3 +27,62 @@ async def reverse_geocode(lat: float, lon: float) -> str | None:
     except Exception as e:
         logger.exception("Reverse geocode failed for (%f, %f): %s", lat, lon, e)
         return None
+
+
+async def forward_geocode(text: str) -> list[tuple[float, float, str]]:
+    if not GEOAPIFY_API_KEY:
+        logger.warning("GEOAPIFY_API_KEY not set — skipping geocode")
+        return []
+
+    url = f"https://api.geoapify.com/v1/geocode/search?text={text}&apiKey={GEOAPIFY_API_KEY}"
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+            data = resp.json()
+            features = data.get("features", [])
+            results = []
+            for f in features:
+                props = f.get("properties", {})
+                state = props.get("state") or ""
+                if state.lower() != "campania":
+                    continue
+                lat = props.get("lat")
+                lon = props.get("lon")
+                if lat is None or lon is None:
+                    continue
+                formatted = props.get("formatted") or props.get("address_line1") or text
+                results.append((lat, lon, formatted))
+            if not results:
+                logger.info("No Campania result for address: %s", text)
+            return results
+    except Exception as e:
+            logger.exception("Forward geocode failed for '%s': %s", text, e)
+            return []
+
+
+async def get_transit_time(
+    lat1: float, lon1: float, lat2: float, lon2: float, mode: str = "bus"
+) -> float | None:
+    if not GEOAPIFY_API_KEY:
+        logger.warning("GEOAPIFY_API_KEY not set — skipping routing")
+        return None
+
+    url = (
+        f"https://api.geoapify.com/v1/routing?"
+        f"waypoints={lat1},{lon1}|{lat2},{lon2}&mode={mode}&apiKey={GEOAPIFY_API_KEY}"
+    )
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+            data = resp.json()
+            features = data.get("features", [])
+            if not features:
+                return None
+            properties = features[0].get("properties", {})
+            travel_time = properties.get("time")
+            return travel_time + 1800 if travel_time is not None else None
+    except Exception as e:
+        logger.exception("Routing failed for (%f,%f) -> (%f,%f): %s", lat1, lon1, lat2, lon2, e)
+        return None
