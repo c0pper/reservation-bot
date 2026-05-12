@@ -298,7 +298,6 @@ async def _filter_starts_by_transit(
     if not confirmed:
         return starts
 
-    transit_cache: dict[tuple[float, float], float] = {}
     result = []
 
     def find_prev(start_min: int) -> dict | None:
@@ -315,19 +314,9 @@ async def _filter_starts_by_transit(
             result.append(t)
             continue
 
-        key = (prev["latitude"], prev["longitude"])
-        if key not in transit_cache:
-            travel_seconds = await geocoder.get_transit_time(
-                prev["latitude"], prev["longitude"], dest_lat, dest_lon, mode="drive"
-            )
-            transit_cache[key] = travel_seconds
-
-        travel_time = transit_cache[key]
-        if travel_time is None:
-            result.append(t)
-            continue
-
-        travel_min = travel_time / 60
+        travel_min = (await geocoder.get_transit_time(
+            prev["latitude"], prev["longitude"], dest_lat, dest_lon, mode="drive"
+        )) / 60
         prev_end_min = sch._to_min(prev["end_time"])
         if t_min >= prev_end_min + travel_min:
             result.append(t)
@@ -351,13 +340,9 @@ async def _filter_durations_by_transit(
         return options
 
     next_b = min(confirmed, key=lambda b: sch._to_min(b["start_time"]))
-    travel_seconds = await geocoder.get_transit_time(
+    travel_min = await geocoder.get_transit_time(
         current_lat, current_lon, next_b["latitude"], next_b["longitude"], mode="drive"
-    )
-    if travel_seconds is None:
-        return options
-
-    travel_min = travel_seconds / 60
+    ) / 60
     next_start_min = sch._to_min(next_b["start_time"])
     max_allowed_end = next_start_min - travel_min
 

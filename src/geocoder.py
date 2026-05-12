@@ -65,10 +65,10 @@ async def forward_geocode(text: str) -> list[tuple[float, float, str]]:
 
 async def get_transit_time(
     lat1: float, lon1: float, lat2: float, lon2: float, mode: str = "bus"
-) -> float | None:
+) -> float:
     if not GEOAPIFY_API_KEY:
-        logger.warning("GEOAPIFY_API_KEY not set — skipping routing")
-        return None
+        logger.warning("⚠️ GEOAPIFY_API_KEY not set — assuming 1 hour transit time ⚠️")
+        return 3600.0
 
     url = (
         f"https://api.geoapify.com/v1/routing?"
@@ -81,10 +81,14 @@ async def get_transit_time(
             data = resp.json()
             features = data.get("features", [])
             if not features:
-                return None
+                logger.warning("⚠️ Routing returned no features — assuming 1 hour transit time ⚠️")
+                return 3600.0
             properties = features[0].get("properties", {})
             travel_time = properties.get("time")
-            return travel_time + 1800 if travel_time is not None else None
+            if travel_time is None:
+                logger.warning("⚠️ Routing response missing time — assuming 1 hour transit time ⚠️")
+                return 3600.0
+            return travel_time + 1800
     except Exception as e:
-        logger.exception("Routing failed for (%f,%f) -> (%f,%f): %s", lat1, lon1, lat2, lon2, e)
-        return None
+        logger.exception("⚠️ Routing failed for (%f,%f) -> (%f,%f): %s — assuming 1 hour transit time ⚠️", lat1, lon1, lat2, lon2, e)
+        return 3600.0
