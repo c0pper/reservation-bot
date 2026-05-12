@@ -206,10 +206,16 @@ async def location_received(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     logger.info("User %d entered address: %s", user.id, text)
     context.user_data["booking_address_raw"] = text
 
-    results = await geocoder.forward_geocode(text)
+    results, reason = await geocoder.forward_geocode(text)
     if not results:
-        logger.info("User %d address not in Campania or geocode failed: %s", user.id, text)
-        await update.message.reply_text(strings.LOCATION_NOT_FOUND)
+        logger.info("User %d address not found (reason=%s): %s", user.id, reason, text)
+        msg = {
+            "api_key": strings.LOCATION_ERR_API_KEY,
+            "network": strings.LOCATION_ERR_NETWORK,
+            "no_results": strings.LOCATION_ERR_NO_RESULTS,
+            "not_in_campania": strings.LOCATION_ERR_FILTERED,
+        }.get(reason, strings.LOCATION_NOT_FOUND)
+        await update.message.reply_text(msg)
         return LOCATION
 
     if len(results) == 1:

@@ -29,10 +29,10 @@ async def reverse_geocode(lat: float, lon: float) -> str | None:
         return None
 
 
-async def forward_geocode(text: str) -> list[tuple[float, float, str]]:
+async def forward_geocode(text: str) -> tuple[list[tuple[float, float, str, str, str]], str | None]:
     if not GEOAPIFY_API_KEY:
         logger.warning("GEOAPIFY_API_KEY not set — skipping geocode")
-        return []
+        return [], "api_key"
 
     url = f"https://api.geoapify.com/v1/geocode/search?text={text}&apiKey={GEOAPIFY_API_KEY}"
     try:
@@ -41,6 +41,8 @@ async def forward_geocode(text: str) -> list[tuple[float, float, str]]:
             resp.raise_for_status()
             data = resp.json()
             features = data.get("features", [])
+            if not features:
+                return [], "no_results"
             results = []
             for f in features:
                 props = f.get("properties", {})
@@ -57,10 +59,11 @@ async def forward_geocode(text: str) -> list[tuple[float, float, str]]:
                 results.append((lat, lon, formatted, city, postcode))
             if not results:
                 logger.info("No Campania result for address: %s", text)
-            return results
+                return [], "not_in_campania"
+            return results, None
     except Exception as e:
             logger.exception("Forward geocode failed for '%s': %s", text, e)
-            return []
+            return [], "network"
 
 
 async def get_transit_time(
