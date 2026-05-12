@@ -52,7 +52,9 @@ async def forward_geocode(text: str) -> list[tuple[float, float, str]]:
                 if lat is None or lon is None:
                     continue
                 formatted = props.get("formatted") or props.get("address_line1") or text
-                results.append((lat, lon, formatted))
+                city = props.get("city", "")
+                postcode = props.get("postcode", "")
+                results.append((lat, lon, formatted, city, postcode))
             if not results:
                 logger.info("No Campania result for address: %s", text)
             return results
