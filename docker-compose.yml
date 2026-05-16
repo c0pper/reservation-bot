@@ -4,4 +4,5 @@ services:
     env_file: stack.env
     volumes:
       - /home/simo/docker/reservation-bot/data:/app/data
+      - /home/simo/docker/reservation-bot/logs:/app/.logs
     restart: unless-stopped
